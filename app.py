@@ -35,6 +35,9 @@ def get_event_positions():
     event_code = request.args.get('event_code', default=None, type=int)  # Get event_code from request
     event_date = request.args.get('event_date', default=None, type=str)  # Get event_date from request
 
+    # Print statements for debugging
+    print(f"Received event_code: {event_code}, event_date: {event_date}")
+    
     query = EventPosition.query
 
     # Building SQL query based on provided parameters
@@ -46,6 +49,9 @@ def get_event_positions():
         query = query.filter(EventPosition.event_date == event_date)
     
     event_positions = query.all()
+
+    # Print the fetched rows for debugging
+    print(f"Fetched rows: {rows}")
 
     # Return as JSON
     return jsonify([{
