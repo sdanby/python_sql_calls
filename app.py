@@ -51,7 +51,7 @@ def get_event_positions():
     event_positions = query.all()
 
     # Print the fetched rows for debugging
-    print(f"Fetched rows: {rows}")
+    #print(f"Fetched rows: {rows}")
 
     # Return as JSON
     return jsonify([{
