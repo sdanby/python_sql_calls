@@ -86,11 +86,14 @@ def get_event_positions():
 
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
-    # Retrieve all parkrun events from the PostgreSQL database
-    events = ParkrunEvent.query.all()  # SQLAlchemy ORM query to get all events
-    # Format the data as a list of dictionaries
+    event_code = request.args.get('event_code')  # Get event_code from query parameter
+    if event_code:
+        events = ParkrunEvent.query.filter_by(event_code=event_code).all()  # Filter by event_code if provided
+    else:
+        events = ParkrunEvent.query.all()  # Retrieve all parkrun events if no code provided
+
     formatted_events = [event.to_dict() for event in events]
-    return jsonify(formatted_events)  # Return JSON response
+    return jsonify(formatted_events)
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
