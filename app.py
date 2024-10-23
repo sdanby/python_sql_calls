@@ -30,6 +30,21 @@ class EventPosition(db.Model):
     comment = db.Column(db.String)
     athlete_code = db.Column(db.String)
 
+class ParkrunEvent(db.Model):
+    __tablename__ = 'parkrun_events'
+    event_code = db.Column(db.Integer, primary_key=True)
+    event_date = db.Column(db.String, nullable=False)  # Use String for storing date
+    last_position = db.Column(db.Integer)
+    volunteers = db.Column(db.Integer)
+
+    def to_dict(self):
+        return {
+            'event_code': self.event_code,
+            'event_date': self.event_date,
+            'last_position': self.last_position,
+            'volunteers': self.volunteers
+        }
+
 @app.route('/api/eventpositions', methods=['GET'])
 def get_event_positions():
     event_code = request.args.get('event_code', default=None, type=int)  # Get event_code from request
@@ -71,28 +86,10 @@ def get_event_positions():
 
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
-    # Connect to SQLite database
-    sqlite_conn = sqlite3.connect('C:\\Users\\stevi\\flask-backend\\myapp\\parkrun.db')
-    sqlite_cursor = sqlite_conn.cursor()
-    
-    # Retrieve parkrun events
-    sqlite_cursor.execute("SELECT event_code, event_date, last_position, volunteers FROM parkrun_events;")
-    events = sqlite_cursor.fetchall()
-
-    # Close SQLite connection
-    sqlite_conn.close()
-
+    # Retrieve all parkrun events from the PostgreSQL database
+    events = ParkrunEvent.query.all()  # SQLAlchemy ORM query to get all events
     # Format the data as a list of dictionaries
-    formatted_events = [
-        {
-            'event_code': event[0],
-            'event_date': event[1],
-            'last_position': event[2],
-            'volunteers': event[3]
-        }
-        for event in events
-    ]
-
+    formatted_events = [event.to_dict() for event in events]
     return jsonify(formatted_events)  # Return JSON response
 
 @app.route('/api/events', methods=['GET'])
