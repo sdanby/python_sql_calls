@@ -69,6 +69,32 @@ def get_event_positions():
         'athlete_code': ep.athlete_code,
     } for ep in event_positions])
 
+@app.route('/api/parkrun_events', methods=['GET'])
+def get_parkrun_events():
+    # Connect to SQLite database
+    sqlite_conn = sqlite3.connect('C:\\Users\\stevi\\flask-backend\\myapp\\parkrun.db')
+    sqlite_cursor = sqlite_conn.cursor()
+    
+    # Retrieve parkrun events
+    sqlite_cursor.execute("SELECT event_code, event_date, last_position, volunteers FROM parkrun_events;")
+    events = sqlite_cursor.fetchall()
+
+    # Close SQLite connection
+    sqlite_conn.close()
+
+    # Format the data as a list of dictionaries
+    formatted_events = [
+        {
+            'event_code': event[0],
+            'event_date': event[1],
+            'last_position': event[2],
+            'volunteers': event[3]
+        }
+        for event in events
+    ]
+
+    return jsonify(formatted_events)  # Return JSON response
+
 @app.route('/api/events', methods=['GET'])
 def get_events():
     events = Event.query.all()  # Fetching event names and codes
