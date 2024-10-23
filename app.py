@@ -37,14 +37,14 @@ class ParkrunEvent(db.Model):
     last_position = db.Column(db.Integer)
     volunteers = db.Column(db.Integer)
 
-    def to_dict(self):
+def to_dict(self):
         return {
             'event_code': self.event_code,
-            'event_date': self.event_date,
+            'event_date': self.event_date.isoformat() if isinstance(self.event_date, datetime.date) else self.event_date,
             'last_position': self.last_position,
             'volunteers': self.volunteers
         }
-
+    
 @app.route('/api/eventpositions', methods=['GET'])
 def get_event_positions():
     event_code = request.args.get('event_code', default=None, type=int)  # Get event_code from request
