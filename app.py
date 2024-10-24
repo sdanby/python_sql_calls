@@ -88,14 +88,20 @@ def get_event_positions():
 
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
-    event_code = request.args.get('event_code')  # Get event_code from query parameter
-    if event_code:
-        events = ParkrunEvent.query.filter_by(event_code=event_code).all()  # Filter by event_code if provided
-    else:
-        events = ParkrunEvent.query.all()  # Retrieve all parkrun events if no code provided
+    event_code = request.args.get('event_code')
+    
+    if event_code is not None:
+        try:
+            event_code = int(event_code)  # Ensure it's an integer
+        except ValueError:
+            return jsonify({"error": "Invalid event_code"}), 400
 
+    events = ParkrunEvent.query.filter_by(event_code=event_code).all()
+    print(f"Filtered event_code: {event_code}, Found {len(events)} events.")  # Debugging line
+    
     formatted_events = [event.to_dict() for event in events]
     return jsonify(formatted_events)
+
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
