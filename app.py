@@ -40,12 +40,12 @@ class ParkrunEvent(db.Model):
     volunteers = db.Column(db.Integer)
 
     def to_dict(self):
-            return {
-                'event_code': self.event_code,
-                'event_date': self.event_date.isoformat() if self.event_date else None,  # Only convert if not None
-                'last_position': self.last_position,
-                'volunteers': self.volunteers
-            }
+       return {
+            'event_code': self.event_code,
+            'event_date': self.event_date,  # Return the string directly
+            'last_position': self.last_position,
+            'volunteers': self.volunteers
+        }
     
 @app.route('/api/eventpositions', methods=['GET'])
 def get_event_positions():
