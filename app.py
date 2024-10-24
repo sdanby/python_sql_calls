@@ -38,7 +38,7 @@ class ParkrunEvent(db.Model):
     event_date = db.Column(db.String, nullable=False)  # Use String for storing date
     last_position = db.Column(db.Integer)
     volunteers = db.Column(db.Integer)
-    event_number = db.Column(db.Integer, primary=True)
+    event_number = db.Column(db.Integer,primary_key=True)
 
     def to_dict(self):
        return {
@@ -46,7 +46,7 @@ class ParkrunEvent(db.Model):
             'event_date': self.event_date,  # Return the string directly
             'last_position': self.last_position,
             'volunteers': self.volunteers,
-            'event_number': seleft.event_number,
+            'event_number' : self.event_number,
         }
     
 @app.route('/api/eventpositions', methods=['GET'])
