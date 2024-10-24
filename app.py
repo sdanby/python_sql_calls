@@ -38,13 +38,15 @@ class ParkrunEvent(db.Model):
     event_date = db.Column(db.String, nullable=False)  # Use String for storing date
     last_position = db.Column(db.Integer)
     volunteers = db.Column(db.Integer)
+    event_number = db.Column(db.Integer, primary=True)
 
     def to_dict(self):
        return {
             'event_code': self.event_code,
             'event_date': self.event_date,  # Return the string directly
             'last_position': self.last_position,
-            'volunteers': self.volunteers
+            'volunteers': self.volunteers,
+            'event_number': seleft.event_number,
         }
     
 @app.route('/api/eventpositions', methods=['GET'])
@@ -88,7 +90,7 @@ def get_event_positions():
 
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
-    event_code = request.args.get('event_code')
+    event_code = request.args.get('event_code', default=None, type=int)
     
     if event_code is not None:
         try:
