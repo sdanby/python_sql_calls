@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS  # Make sure to import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Date
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -41,7 +42,7 @@ class ParkrunEvent(db.Model):
     def to_dict(self):
             return {
                 'event_code': self.event_code,
-                'event_date': self.event_date.isoformat() if isinstance(self.event_date, datetime.date) else self.event_date,
+                'event_date': self.event_date.isoformat() if self.event_date else None,  # Only convert if not None
                 'last_position': self.last_position,
                 'volunteers': self.volunteers
             }
