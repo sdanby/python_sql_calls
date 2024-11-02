@@ -3,6 +3,7 @@ from flask_cors import CORS  # Make sure to import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Date
 from datetime import datetime
+from sqlalchemy import func
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -104,6 +105,40 @@ def get_parkrun_events():
     formatted_events = [event.to_dict() for event in events]
     return jsonify(formatted_events)
 
+@app.route('/api/last_positions', methods=['GET'])
+def get_last_positions():
+    # Get the event_code from the request arguments
+    event_code = request.args.get('event_code', default=None, type=int)
+    
+    if event_code is None:
+        return jsonify({"error": "event_code is required"}), 400
+
+    # Query to get the last position for each week for the specified event_code
+    last_positions_query = db.session.query(
+        EventPosition.event_code,
+        func.strftime('%Y-%m', EventPosition.event_date).label('week')  # Format to year-month
+    ).add_columns(
+        func.max(EventPosition.position).label('last_position')  # Find last position for the week
+    ).filter(EventPosition.event_code == event_code)  # Filter by the given event_code
+    .group_by(
+        EventPosition.event_code, 
+        func.strftime('%Y-%m', EventPosition.event_date)  # Grouping by event code and month
+    ).all()
+
+    # Prepare the response
+    if not last_positions_query:
+        return jsonify({"message": "No records found for this event code"}), 404
+
+    # Create a list to store the last positions
+    last_positions = []
+    for event_code, week, last_position in last_positions_query:
+        last_positions.append({
+            'event_code': event_code,
+            'week': week,
+            'last_position': last_position
+        })
+
+    return jsonify(last_positions)  # Return the retrieved last positions as JSON
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
