@@ -95,7 +95,6 @@ def get_parkrun_events():
     if event_code is not None:
         try:
             event_code = int(event_code)  # Ensure it's an integer
-            event_number = int(event_number)  # Ensure it's an integer
         except ValueError:
             return jsonify({"error": "Invalid event_code"}), 400
 
