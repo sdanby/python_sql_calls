@@ -114,16 +114,21 @@ def get_last_positions():
         return jsonify({"error": "event_code is required"}), 400
 
     # Query to get the last position for each week for the specified event_code
-    last_positions_query = db.session.query(
-        EventPosition.event_code,
-        func.strftime('%Y-%m', EventPosition.event_date).label('week')  # Format to year-month
-    ).add_columns(
-        func.max(EventPosition.position).label('last_position')  # Find last position for the week
-    ).filter(EventPosition.event_code == event_code)  # Filter by the given event_code
-    .group_by(
-        EventPosition.event_code, 
-        func.strftime('%Y-%m', EventPosition.event_date)  # Grouping by event code and month
-    ).all()
+    last_positions_query = (
+        db.session.query(
+            EventPosition.event_code,
+            func.strftime('%Y-%m', EventPosition.event_date).label('week')  # Format to year-month
+        )
+        .add_columns(
+            func.max(EventPosition.position).label('last_position')  # Find last position for the week
+        )
+        .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
+        .group_by(
+            EventPosition.event_code, 
+            func.strftime('%Y-%m', EventPosition.event_date)  # Grouping by event code and month
+        )
+        .all()
+    )
 
     # Prepare the response
     if not last_positions_query:
