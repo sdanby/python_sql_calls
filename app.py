@@ -105,6 +105,9 @@ def get_parkrun_events():
     formatted_events = [event.to_dict() for event in events]
     return jsonify(formatted_events)
 
+from flask import jsonify, request
+from sqlalchemy import func
+
 @app.route('/api/last_positions', methods=['GET'])
 def get_last_positions():
     event_code = request.args.get('event_code', default=None, type=int)
@@ -113,30 +116,37 @@ def get_last_positions():
         return jsonify({"error": "event_code is required"}), 400
 
     # Query to get the last position for each week for the specified event_code using PostgreSQL's to_char
-    last_positions_query = db.session.query(
-        EventPosition.event_code,
-        func.to_char(EventPosition.event_date, 'YYYY-MM')  # Use to_char for formatting
-    ).add_columns(
-        func.max(EventPosition.position).label('last_position')  # Find last position for the week
-    ).filter(EventPosition.event_code == event_code)  # Filter by the given event_code
-    .group_by(
-        EventPosition.event_code,
-        func.to_char(EventPosition.event_date, 'YYYY-MM')  # Grouping by event code and month
-    ).all()
+    last_positions_query = (
+        db.session.query(
+            EventPosition.event_code,
+            func.to_char(EventPosition.event_date, 'YYYY-MM').label('week')  # Format to year-month
+        )
+        .add_columns(
+            func.max(EventPosition.position).label('last_position')  # Find last position for the week
+        )
+        .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
+        .group_by(
+            EventPosition.event_code,
+            func.to_char(EventPosition.event_date, 'YYYY-MM')  # Grouping by event code and formatted date
+        )
+        .all()
+    )
 
     if not last_positions_query:
         return jsonify({"message": "No records found for this event code"}), 404
 
-    # Create a list to store the last positions
-    last_positions = []
-    for event_code, week, last_position in last_positions_query:
-        last_positions.append({
+    # Prepare and return the results
+    last_positions = [
+        {
             'event_code': event_code,
             'week': week,
             'last_position': last_position
-        })
+        }
+        for event_code, week, last_position in last_positions_query
+    ]
 
     return jsonify(last_positions)  # Return the retrieved last positions as JSON
+
 
 
 @app.route('/api/events', methods=['GET'])
