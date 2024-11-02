@@ -116,39 +116,37 @@ def get_last_positions():
         return jsonify({"error": "event_code is required"}), 400
 
     # Query to get the last position for each week for the specified event_code
-    last_positions_query = (
-        db.session.query(
-            EventPosition.event_code,
-            ParkrunEvent.event_number,  # Joining to get the event_number
-            func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM').label('week')  # Format to year-month
+    # Move the filtering to a subquery if your dataset is large
+    try:
+        last_positions_query = (
+            db.session.query(
+                EventPosition.event_code,
+                ParkrunEvent.event_number,
+                func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM').label('week')
+            )
+            .join(ParkrunEvent, EventPosition.event_code == ParkrunEvent.event_code)
+            .filter(EventPosition.event_code == event_code)
+            .group_by(
+                EventPosition.event_code,
+                ParkrunEvent.event_number,
+                func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM')
+            )
+            .all()
         )
-        .join(ParkrunEvent, EventPosition.event_code == ParkrunEvent.event_code)  # Perform the join
-        .add_columns(
-            func.max(EventPosition.position).label('last_position')  # Find last position for the week
-        )
-        .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
-        .group_by(
-            EventPosition.event_code,
-            ParkrunEvent.event_number,  # Include event_number in the grouping
-            func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM')  # Group by formatted date
-        )
-        .all()
-    )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
     if not last_positions_query:
         return jsonify({"message": "No records found for this event code"}), 404
 
     # Prepare the response
-    last_positions = []
-    for event_code, event_number, week, last_position in last_positions_query:
-        last_positions.append({
-            'event_code': event_code,
-            'event_number': event_number,  # Include event_number in the results
-            'last_position': last_position
-        })
+    last_positions = [{
+        'event_code': code,
+        'event_number': number,
+        'last_position': last_position
+    } for code, number, last_position in last_positions_query]
 
-    return jsonify(last_positions)  # Return the retrieved last positions as JSON
-
+    return jsonify(last_positions)
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
