@@ -107,30 +107,23 @@ def get_parkrun_events():
 
 @app.route('/api/last_positions', methods=['GET'])
 def get_last_positions():
-    # Get the event_code from the request arguments
     event_code = request.args.get('event_code', default=None, type=int)
-    
+
     if event_code is None:
         return jsonify({"error": "event_code is required"}), 400
 
-    # Query to get the last position for each week for the specified event_code
-    last_positions_query = (
-        db.session.query(
-            EventPosition.event_code,
-            func.strftime('%Y-%m', EventPosition.event_date).label('week')  # Format to year-month
-        )
-        .add_columns(
-            func.max(EventPosition.position).label('last_position')  # Find last position for the week
-        )
-        .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
-        .group_by(
-            EventPosition.event_code, 
-            func.strftime('%Y-%m', EventPosition.event_date)  # Grouping by event code and month
-        )
-        .all()
-    )
+    # Query to get the last position for each week for the specified event_code using PostgreSQL's to_char
+    last_positions_query = db.session.query(
+        EventPosition.event_code,
+        func.to_char(EventPosition.event_date, 'YYYY-MM')  # Use to_char for formatting
+    ).add_columns(
+        func.max(EventPosition.position).label('last_position')  # Find last position for the week
+    ).filter(EventPosition.event_code == event_code)  # Filter by the given event_code
+    .group_by(
+        EventPosition.event_code,
+        func.to_char(EventPosition.event_date, 'YYYY-MM')  # Grouping by event code and month
+    ).all()
 
-    # Prepare the response
     if not last_positions_query:
         return jsonify({"message": "No records found for this event code"}), 404
 
@@ -144,6 +137,7 @@ def get_last_positions():
         })
 
     return jsonify(last_positions)  # Return the retrieved last positions as JSON
+
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
