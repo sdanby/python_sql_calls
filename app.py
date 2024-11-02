@@ -119,15 +119,18 @@ def get_last_positions():
     last_positions_query = (
         db.session.query(
             EventPosition.event_code,
-            func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM').label('week')  # Convert string to date and then format to year-month
+            ParkrunEvent.event_number,  # Joining to get the event_number
+            func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM').label('week')  # Format to year-month
         )
+        .join(ParkrunEvent, EventPosition.event_code == ParkrunEvent.event_code)  # Perform the join
         .add_columns(
-            func.max(EventPosition.position).label('last_position')
+            func.max(EventPosition.position).label('last_position')  # Find last position for the week
         )
-        .filter(EventPosition.event_code == event_code)
+        .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
         .group_by(
             EventPosition.event_code,
-            func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM')  # Grouping
+            ParkrunEvent.event_number,  # Include event_number in the grouping
+            func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM')  # Group by formatted date
         )
         .all()
     )
@@ -137,14 +140,14 @@ def get_last_positions():
 
     # Prepare the response
     last_positions = []
-    for event_code, week, last_position in last_positions_query:
+    for event_code, event_number, week, last_position in last_positions_query:
         last_positions.append({
             'event_code': event_code,
-            'week': week,
+            'event_number': event_number,  # Include event_number in the results
             'last_position': last_position
         })
 
-    return jsonify(last_positions)
+    return jsonify(last_positions)  # Return the retrieved last positions as JSON
 
 
 @app.route('/api/events', methods=['GET'])
