@@ -115,21 +115,18 @@ def get_last_positions():
     if event_code is None:
         return jsonify({"error": "event_code is required"}), 400
 
-    # Query to get the last position for each week for the specified event_code
-    # Move the filtering to a subquery if your dataset is large
+    # Query to get last positions for the specified event_code
     try:
         last_positions_query = (
             db.session.query(
                 EventPosition.event_code,
-                ParkrunEvent.event_number,
-                func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM').label('week')
+                EventPosition.event_date,  # Get the event date directly
+                func.max(EventPosition.position).label('last_position')  # Find the last position for the week
             )
-            .join(ParkrunEvent, EventPosition.event_code == ParkrunEvent.event_code)
-            .filter(EventPosition.event_code == event_code)
+            .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
             .group_by(
                 EventPosition.event_code,
-                ParkrunEvent.event_number,
-                func.to_char(func.to_date(EventPosition.event_date, 'DD/MM/YYYY'), 'YYYY-MM')
+                EventPosition.event_date  # Group by event code and event date
             )
             .all()
         )
@@ -142,11 +139,12 @@ def get_last_positions():
     # Prepare the response
     last_positions = [{
         'event_code': code,
-        'event_number': number,
+        'event_date': date,  # Use event_date directly
         'last_position': last_position
-    } for code, number, last_position in last_positions_query]
+    } for code, date, last_position in last_positions_query]
 
-    return jsonify(last_positions)
+    return jsonify(last_positions)  # Return the retrieved last positions as JSON
+
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
