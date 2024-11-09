@@ -89,6 +89,30 @@ def get_event_positions():
         'athlete_code': ep.athlete_code,
     } for ep in event_positions])
 
+@app.route('/api/eventpositions', methods=['DELETE'])
+def delete_event_positions():
+    data = request.get_json()  # Get the JSON payload
+    event_code = data.get('event_code')
+    event_date = data.get('event_date')
+
+    # Validate input
+    if not event_code or not event_date:
+        return jsonify({"error": "event_code and event_date are required"}), 400
+
+    try:
+        # Delete from eventpositions table
+        rows_deleted = db.session.query(EventPosition).filter(
+            EventPosition.event_code == event_code,
+            EventPosition.event_date == event_date
+        ).delete()
+        
+        db.session.commit()  # Commit changes to the database
+        return jsonify({"message": f"{rows_deleted} record(s) deleted from eventpositions."}), 200
+
+    except Exception as e:
+        db.session.rollback()  # Rollback in case of error
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
     event_code = request.args.get('event_code', default=None, type=int)
@@ -145,6 +169,29 @@ def get_last_positions():
 
     return jsonify(last_positions)  # Return the retrieved last positions as JSON
 
+@app.route('/api/parkrun_events', methods=['DELETE'])
+def delete_parkrun_events():
+    data = request.get_json()  # Get the JSON payload
+    event_code = data.get('event_code')
+    event_date = data.get('event_date')
+
+    # Validate input
+    if not event_code or not event_date:
+        return jsonify({"error": "event_code and event_date are required"}), 400
+
+    try:
+        # Delete from parkrun_events table
+        rows_deleted = db.session.query(ParkrunEvent).filter(
+            ParkrunEvent.event_code == event_code,
+            ParkrunEvent.event_date == event_date
+        ).delete()
+
+        db.session.commit()  # Commit changes to the database
+        return jsonify({"message": f"{rows_deleted} record(s) deleted from parkrun_events."}), 200
+
+    except Exception as e:
+        db.session.rollback()  # Rollback in case of error
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
