@@ -140,15 +140,16 @@ def get_parkrun_event():
         return jsonify({"error": "event_code and event_date are required"}), 400
 
     # Convert event_date from DD/MM/YYYY to correct format YYYY-MM-DD
-    try:
-        parsed_event_date = datetime.strptime(event_date, '%d/%m/%Y')  # Ensure correct parsing
-        formatted_event_date = parsed_event_date.strftime('%Y-%m-%d')  # Convert to YYYY-MM-DD
-    except ValueError:
-        return jsonify({"error": "Invalid date format. Please use DD/MM/YYYY."}), 400
+   # try:
+   #     parsed_event_date = datetime.strptime(event_date, '%d/%m/%Y')  # Ensure correct parsing
+   #     formatted_event_date = parsed_event_date.strftime('%Y-%m-%d')  # Convert to YYYY-MM-DD
+   # except ValueError:
+   #     return jsonify({"error": "Invalid date format. Please use DD/MM/YYYY."}), 400
 
     try:
         # Fetch the specific event based on event_code and event_date
-        event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first()
+        #event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first()
+        event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=event_date).first()
 
         if event_record:
             return jsonify(event_record.to_dict()), 200  # Return the found record
