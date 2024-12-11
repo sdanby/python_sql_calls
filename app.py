@@ -13,6 +13,11 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://parkrundata_user:m3UE0JWil
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+class ProcessingStatus(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    status = db.Column(db.String(10), nullable=False)
+    updated_at = db.Column(db.DateTime, server_default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
 class Event(db.Model):
     __tablename__ = 'events'
     event_code = db.Column(db.Integer, primary_key=True)
@@ -233,9 +238,49 @@ def get_events():
         'event_name': e.event_name
     } for e in events])  # Return as JSON
 
+
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    """Get the current processing status."""
+    status_entry = ProcessingStatus.query.first()
+    if status_entry:
+        return jsonify({'status': status_entry.status}), 200
+    else:
+        return jsonify({'status': 'not set'}), 404
+
+@app.route('/api/start', methods=['POST'])
+def start_processing():
+    """Set the processing status to 'running'."""
+    status_entry = ProcessingStatus.query.first()
+    
+    if status_entry:
+        status_entry.status = 'running'
+    else:
+        status_entry = ProcessingStatus(status='running')
+        db.session.add(status_entry)
+    
+    db.session.commit()
+    return jsonify({'status': 'started'}), 200
+
+@app.route('/api/stop', methods=['POST'])
+def stop_processing():
+    """Set the processing status to 'stopped'."""
+    status_entry = ProcessingStatus.query.first()
+    
+    if status_entry:
+        status_entry.status = 'stopped'
+        db.session.commit()
+        return jsonify({'status': 'stopped'}), 200
+    else:
+        return jsonify({'status': 'not set'}), 404   
+
 @app.route('/')
 def hello():
     return 'How quickly will this update the front-end?'
+
+@app.route('/build', methods=['GET'])
+def create_tables():
+    db.create_all()  # 
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
