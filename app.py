@@ -233,7 +233,11 @@ def delete_parkrun_events():
 @app.route('/process_events', methods=['POST'])
 def process_events():
     data = request.get_json() 
-    event_code = data.get('event_code')    
+    if data is None: 
+        return jsonify({'error': 'No JSON payload received'}), 400 
+    event_code = data.get('event_code') 
+    if event_code is None: 
+        return jsonify({'error': 'event_code not provided'}), 400
     print(f"process_events -1 event_code = {event_code}")
     print(event_code)
     events = []
