@@ -277,7 +277,7 @@ def process_events():
 
     # Deleting the identified records
     for event in events_to_delete:
-        parkrun_events.query.filter_by(event_number=event['event_number'], event_code=event_code).delete()
+        ParkrunEvent.query.filter_by(event_number=event['event_number'], event_code=event_code).delete()
         deleted_records += 1
 
     db.session.commit()  # Submit the changes to the database
