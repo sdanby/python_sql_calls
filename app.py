@@ -230,6 +230,57 @@ def delete_parkrun_events():
         db.session.rollback()  # Rollback in case of error
         return jsonify({"error": str(e)}), 500
 
+@app.route('/process_events', methods=['POST'])
+def process_events():
+    data = request.get_json() 
+    event_code = data.get('event_code')    
+    print(f"process_events -1 event_code = {event_code}")
+    print(event_code)
+    events = []
+    # Direct SQL Query
+    if event_code is not None:
+        with db.engine.connect() as connection:
+            result = connection.execute(text("SELECT * FROM parkrun_events WHERE event_code = :event_code"), {"event_code": event_code})
+            events = [row._mapping for row in result]
+            #print(f"Direct SQL Query Fetched events: {events}")
+    #print(f"events = {events}")
+    if not events:
+        return jsonify({'error': 'No events found for the specified event code'}), 404
+
+    # Convert fetched events to a list of dictionaries for easier manipulation
+    events_data = [{'event_date': event['event_date'], 'event_number': event['event_number']} for event in events]
+
+
+    # Sort events to ensure they are in the correct order
+    events_data.sort(key=lambda x: datetime.strptime(x['event_date'], '%d/%m/%Y'))
+
+    deleted_records = 0
+    events_to_delete = set()  # Use a set to prevent duplicates
+    print (f"length of events to delete: {events_to_delete}")
+    for i in range(len(events_data)):
+        current_event = events_data[i]
+        #print(f"current_event_number {current_event['event_number']}")
+        if current_event['event_number'] > 10000:
+            # Case 1: Check if it has the earliest date
+            print(f"test {i}, {events_data[i - 1]['event_number']}, {current_event['event_number']}, {events_data[i + 1]['event_number']},{current_event['event_date']}")
+
+            # Case 2: Check if the previous event number is correct
+            if i > 0 and i < len(events_data) - 1 and int(events_data[i - 1]['event_number']) + 2 == int(events_data[i + 1]['event_number']):
+                events_to_delete.add(tuple(current_event.items()))
+
+    # Convert set back to list of dictionaries
+    events_to_delete = [dict(event) for event in events_to_delete]
+    print(f"Events to delete: {events_to_delete}")
+
+    # Deleting the identified records
+    for event in events_to_delete:
+        parkrun_events.query.filter_by(event_number=event['event_number'], event_code=event_code).delete()
+        deleted_records += 1
+
+    db.session.commit()  # Submit the changes to the database
+
+    return jsonify({'message': 'Processing complete', 'deleted_records': deleted_records}), 200
+
 @app.route('/api/events', methods=['GET'])
 def get_events():
     events = Event.query.all()  # Fetching event names and codes
