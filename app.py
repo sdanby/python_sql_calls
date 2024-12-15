@@ -4,6 +4,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Date
 from datetime import datetime
 from sqlalchemy import func
+from sqlalchemy import text # Import text from SQLAlchemy
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
