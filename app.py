@@ -240,14 +240,12 @@ def process_events():
         return jsonify({'error': 'event_code not provided'}), 400
     print(f"process_events -1 event_code = {event_code}")
     print(event_code)
-    events = []
-    # Direct SQL Query
-    if event_code is not None:
-        with db.engine.connect() as connection:
-            result = connection.execute(text("SELECT * FROM parkrun_events WHERE event_code = :event_code"), {"event_code": event_code})
-            events = [row._mapping for row in result]
-            #print(f"Direct SQL Query Fetched events: {events}")
-    #print(f"events = {events}")
+    events = [] 
+    if event_code is not None: 
+        with db.engine.connect() as connection: 
+            result = connection.execute(text("SELECT * FROM parkrun_events WHERE event_code = :event_code"), {"event_code": event_code}) 
+            events = [dict(row.items()) for row in result.mappings()] 
+            #print(f"Direct SQL Query Fetched events: {events}"
     if not events:
         return jsonify({'error': 'No events found for the specified event code'}), 404
 
