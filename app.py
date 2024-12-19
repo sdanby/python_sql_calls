@@ -62,7 +62,7 @@ def delete_duplicates():
         # SQL query to delete rows with position > 10000 and duplicate event_code and event_date 
         delete_query = """ 
         DELETE FROM parkrun_events 
-        WHERE last_position > 10000 
+        WHERE event_number > 10000 
         AND (event_code, event_date) IN ( 
             SELECT event_code, event_date 
             FROM parkrun_events 
