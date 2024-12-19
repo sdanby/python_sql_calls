@@ -55,6 +55,26 @@ class ParkrunEvent(db.Model):
             'volunteers': self.volunteers,
             'event_number' : self.event_number,
         }
+
+@app.route('/delete_duplicates', methods=['POST']) 
+def delete_duplicates(): 
+    try: 
+        # SQL query to delete rows with position > 10000 and duplicate event_code and event_date 
+        delete_query = """ 
+        DELETE FROM parkrun_events 
+        WHERE last_position > 10000 
+        AND (event_code, event_date) IN ( 
+            SELECT event_code, event_date 
+            FROM parkrun_events 
+            GROUP BY event_code, event_date 
+            HAVING COUNT(*) > 1 ); 
+            """ 
+        result = db.session.execute(text(delete_query)) 
+        db.session.commit() 
+        return jsonify({'message': 'Duplicate rows deleted successfully', 'deleted_rows': result.rowcount}), 200 
+    except Exception as e: 
+        db.session.rollback() 
+        return jsonify({'error': str(e)}), 500
     
 @app.route('/api/eventpositions', methods=['GET'])
 def get_event_positions():
