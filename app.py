@@ -5,7 +5,7 @@ from sqlalchemy import Date
 from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
-from consistency import get_parkrun_data
+#from consistency import get_parkrun_data
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -57,9 +57,9 @@ class ParkrunEvent(db.Model):
             'event_number' : self.event_number,
         }
 
-@app.route('/get_parkrun_data', methods=['GET']) 
-def get_parkrun_data_route(): 
-    return get_parkrun_data()
+#@app.route('/get_parkrun_data', methods=['GET']) 
+#def get_parkrun_data_route(): 
+#    return get_parkrun_data()
 
 @app.route('/delete_duplicates', methods=['POST']) 
 def delete_duplicates(): 
