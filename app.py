@@ -56,6 +56,10 @@ class ParkrunEvent(db.Model):
             'event_number' : self.event_number,
         }
 
+@app.route('/get_parkrun_data', methods=['GET']) 
+def get_parkrun_data_route(): 
+    return get_parkrun_data()
+
 @app.route('/delete_duplicates', methods=['POST']) 
 def delete_duplicates(): 
     try: 
