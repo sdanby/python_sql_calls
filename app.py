@@ -5,6 +5,7 @@ from sqlalchemy import Date
 from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
+from consistency import get_parkrun_data
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
