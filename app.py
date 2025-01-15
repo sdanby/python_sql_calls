@@ -162,35 +162,43 @@ def get_parkrun_events():
 
 @app.route('/api/parkrun_event', methods=['GET'])
 def get_parkrun_event():
-    # Retrieve event_code and event_date from query parameters
+    # Retrieve event_code, event_date, and event_number from query parameters
     event_code = request.args.get('event_code', default=None, type=int)  # Get event_code
     event_date = request.args.get('event_date', default=None, type=str)  # Get event_date
+    event_number = request.args.get('event_number', default=None, type=int)  # Get event_number
 
     # Validate input
-    if event_code is None or event_date is None:
-        return jsonify({"error": "event_code and event_date are required"}), 400
+    if event_code is None:
+        return jsonify({"error": "event_code is required"}), 400
 
-    # Convert event_date from DD/MM/YYYY to correct format YYYY-MM-DD
-   # try:
-   #     parsed_event_date = datetime.strptime(event_date, '%d/%m/%Y')  # Ensure correct parsing
-   #     formatted_event_date = parsed_event_date.strftime('%Y-%m-%d')  # Convert to YYYY-MM-DD
-   # except ValueError:
-   #     return jsonify({"error": "Invalid date format. Please use DD/MM/YYYY."}), 400
+    if event_date is None and event_number is None:
+        return jsonify({"error": "Either event_date or event_number is required"}), 400
+
+    # If event_date is provided, convert it from DD/MM/YYYY to correct format YYYY-MM-DD
+    if event_date:
+        try:
+            parsed_event_date = datetime.strptime(event_date, '%d/%m/%Y')  # Ensure correct parsing
+            formatted_event_date = parsed_event_date.strftime('%Y-%m-%d')  # Convert to YYYY-MM-DD
+        except ValueError:
+            return jsonify({"error": "Invalid date format. Please use DD/MM/YYYY."}), 400
 
     try:
-        # Fetch the specific event based on event_code and event_date
-        #event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first()
-        event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=event_date).first()
+        # Fetch the specific event based on event_code and event_date or event_number
+        if event_number is not None:
+            event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_number=event_number).first()
+        else:
+            event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first()
 
         if event_record:
             return jsonify(event_record.to_dict()), 200  # Return the found record
             
         else:
-            return jsonify({"error": "Event not found for the given code and date."}), 404
+            return jsonify({"error": "Event not found for the given code and date/number."}), 404
 
     except Exception as e:
         print(f"Error occurred: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 from flask import jsonify, request
 from sqlalchemy import func
