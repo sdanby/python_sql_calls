@@ -173,15 +173,6 @@ def get_parkrun_event():
 
     if event_date is None and event_number is None:
         return jsonify({"error": "Either event_date or event_number is required"}), 400
-
-    # If event_date is provided, convert it from DD/MM/YYYY to correct format YYYY-MM-DD
-    if event_date:
-        try:
-            parsed_event_date = datetime.strptime(event_date, '%d/%m/%Y')  # Ensure correct parsing
-            formatted_event_date = parsed_event_date.strftime('%Y-%m-%d')  # Convert to YYYY-MM-DD
-        except ValueError:
-            return jsonify({"error": "Invalid date format. Please use DD/MM/YYYY."}), 400
-    print("get_parkrun_event",event_date,formatted_event_date)
     try:
         # Fetch the specific event based on event_code and event_date or event_number
         if event_number is not None:
