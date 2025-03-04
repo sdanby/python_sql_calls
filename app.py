@@ -361,5 +361,36 @@ def hello():
 def create_tables():
     db.create_all()  # 
 
+@app.route('/event-data', methods=['GET'])
+def fetch_event_data():
+    """Fetch event data from the database and return it as JSON."""
+    try:
+        # Connect to your database
+        conn, cursor, render_db_conn, render_cursor = connections()
+        # Define your SQL query
+        cursor.execute('''
+        WITH first_15_dates AS (
+            SELECT DISTINCT event_date 
+            FROM parkrun_events
+            ORDER BY date(substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2))
+            LIMIT 15)
+        SELECT event_code, event_date, time, athlete_code 
+        FROM eventpositions
+        WHERE event_date IN (SELECT event_date FROM first_15_dates)
+        ORDER BY athlete_code;
+        ''')
+         # Fetch all results
+        rows = cursor.fetchall()
+        # Fetch column names for the output
+        columns = [column[0] for column in cursor.description]
+        # Convert the list of tuples to a list of dictionaries
+        result = [dict(zip(columns, row)) for row in rows]
+        # Close the connection
+        conn.close()
+        # Return the result as JSON
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
