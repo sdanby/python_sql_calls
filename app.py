@@ -361,7 +361,7 @@ def hello():
 def create_tables():
     db.create_all()  # 
 
-@app.route('/event-data', methods=['GET'])
+@app.route('/api/event-data', methods=['GET'])
 def fetch_event_data():
     """Fetch event data from the database and return it as JSON."""
     try:
