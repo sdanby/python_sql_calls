@@ -47,6 +47,9 @@ class ParkrunEvent(db.Model):
     last_position = db.Column(db.Integer)
     volunteers = db.Column(db.Integer)
     event_number = db.Column(db.Integer,primary_key=True)
+    coeff = db.Column(db.Float)
+    obs = db.Column(db.Integer)
+    coeff_event = db.Column(db.Float)
 
     def to_dict(self):
        return {
@@ -55,6 +58,10 @@ class ParkrunEvent(db.Model):
             'last_position': self.last_position,
             'volunteers': self.volunteers,
             'event_number' : self.event_number,
+            'coeff' = : self.coeff,
+            'obs' = : self.obs,
+            'coeff_event' = : self.coeff_event
+
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -398,16 +405,14 @@ def get_results():
     """Get most recent results."""
     try:
         print("Fetching results from the database...")
-        #conn, cursor, *_ = connections()
-        render_db_conn,render_cursor = connections()
-        render_cursor.execute("""
+
+        query = """
             WITH formatted_events AS (
               SELECT *,
                      substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
               FROM parkrun_events
             ),
             ranked_events AS (
-                              
               SELECT *,
                      ROW_NUMBER() OVER (
                        PARTITION BY event_code
@@ -419,15 +424,19 @@ def get_results():
             FROM ranked_events
             WHERE rn <= 15
             ORDER BY event_code, formatted_date;
-        """)
-        rows = render_cursor.fetchall()
-        columns = [desc[0] for desc in render_cursor.description]
+        """
+
+        result_proxy = db.session.execute(query)
+        rows = result_proxy.fetchall()
+        columns = result_proxy.keys()
         result = [dict(zip(columns, row)) for row in rows]
+
         print(f"Fetched {len(result)} results from the database.")
-        render_db_conn.close()
         return jsonify(result), 200
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
