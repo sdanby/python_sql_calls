@@ -58,9 +58,9 @@ class ParkrunEvent(db.Model):
             'last_position': self.last_position,
             'volunteers': self.volunteers,
             'event_number' : self.event_number,
-            'coeff' = : self.coeff,
-            'obs' = : self.obs,
-            'coeff_event' = : self.coeff_event
+            'coeff' : self.coeff,
+            'obs' : self.obs,
+            'coeff_event' : self.coeff_event
 
         }
 
