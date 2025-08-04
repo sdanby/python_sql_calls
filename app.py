@@ -395,37 +395,38 @@ def fetch_event_data():
 
 @app.route('/results', methods=['GET'])
 def get_results():
-    print("Fetching results from the database...")
-    #conn, cursor, *_ = connections()
-    render_db_conn,render_cursor, *_ = connections()
-    render_cursor.execute("""
-        WITH formatted_events AS (
-          SELECT *,
-                 substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
-          FROM parkrun_events
-        ),
-        ranked_events AS (
-                          
-          SELECT *,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY event_code
-                   ORDER BY formatted_date DESC
-                 ) AS rn
-          FROM formatted_events
-        )
-        SELECT event_code, event_date, last_position, volunteers, event_number, coeff, obs, coeff_event
-        FROM ranked_events
-        WHERE rn <= 15
-        ORDER BY event_code, formatted_date;
-    """)
-    rows = render_cursor.fetchall()
-    columns = [desc[0] for desc in render_cursor.description]
-    result = [dict(zip(columns, row)) for row in rows]
-    print(f"Fetched {len(result)} results from the database.")
-    render_db_conn.close()
-    return jsonify(result)
-except Exception as e:
-     return jsonify({'error': str(e)}), 500
+    try:
+        print("Fetching results from the database...")
+        #conn, cursor, *_ = connections()
+        render_db_conn,render_cursor, *_ = connections()
+        render_cursor.execute("""
+            WITH formatted_events AS (
+              SELECT *,
+                     substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+              FROM parkrun_events
+            ),
+            ranked_events AS (
+                              
+              SELECT *,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY event_code
+                       ORDER BY formatted_date DESC
+                     ) AS rn
+              FROM formatted_events
+            )
+            SELECT event_code, event_date, last_position, volunteers, event_number, coeff, obs, coeff_event
+            FROM ranked_events
+            WHERE rn <= 15
+            ORDER BY event_code, formatted_date;
+        """)
+        rows = render_cursor.fetchall()
+        columns = [desc[0] for desc in render_cursor.description]
+        result = [dict(zip(columns, row)) for row in rows]
+        print(f"Fetched {len(result)} results from the database.")
+        render_db_conn.close()
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
