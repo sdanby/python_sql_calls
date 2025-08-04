@@ -395,10 +395,11 @@ def fetch_event_data():
 
 @app.route('/results', methods=['GET'])
 def get_results():
+    """Get most recent results."""
     try:
         print("Fetching results from the database...")
         #conn, cursor, *_ = connections()
-        render_db_conn,render_cursor, *_ = connections()
+        render_db_conn,render_cursor = connections()
         render_cursor.execute("""
             WITH formatted_events AS (
               SELECT *,
