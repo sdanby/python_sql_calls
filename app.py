@@ -447,6 +447,49 @@ def get_results():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/resultsAll', methods=['GET'])
+def get_resultsAll():
+    """Get most recent results."""
+    try:
+        print("Fetching results from the database...")
+
+        query = """
+            WITH formatted_events AS (
+              SELECT *,
+                     substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+              FROM parkrun_events
+            )
+            
+            SELECT 
+              fe.event_code,
+              e.event_name,
+              fe.event_date,
+              fe.last_position,
+              fe.volunteers,
+              fe.event_number,
+              fe.coeff,
+              fe.obs,
+              fe.coeff_event
+            FROM formatted_events fe
+            JOIN events e ON fe.event_code = e.event_code
+            ORDER BY fe.formatted_date DESC, fe.event_code;
+        """
+
+        result_proxy = db.session.execute(query)
+        rows = result_proxy.fetchall()
+        columns = result_proxy.keys()
+        result = [dict(zip(columns, row)) for row in rows]
+
+        print(f"Fetched {len(result)} results from the database.")
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+
+
+
+
