@@ -407,25 +407,33 @@ def get_results():
         print("Fetching results from the database...")
 
         query = """
-        WITH formatted_events AS (
-          SELECT *,
-                 substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
-          FROM parkrun_events
-        ),
-        
-        -- Get the latest 15 unique dates across all events
-        latest_dates AS (
-          SELECT DISTINCT formatted_date
-          FROM formatted_events
-          ORDER BY formatted_date DESC
-          LIMIT 15
-        )
-        
-        -- Filter original data to only include those 15 dates
-        SELECT event_code, event_date, last_position, volunteers, event_number, coeff, obs, coeff_event
-        FROM formatted_events
-        WHERE formatted_date IN (SELECT formatted_date FROM latest_dates)
-        ORDER BY formatted_date DESC, event_code;
+            WITH formatted_events AS (
+              SELECT *,
+                     substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+              FROM parkrun_events
+            ),
+            
+            latest_dates AS (
+              SELECT DISTINCT formatted_date
+              FROM formatted_events
+              ORDER BY formatted_date DESC
+              LIMIT 15
+            )
+            
+            SELECT 
+              fe.event_code,
+              e.event_name,
+              fe.event_date,
+              fe.last_position,
+              fe.volunteers,
+              fe.event_number,
+              fe.coeff,
+              fe.obs,
+              fe.coeff_event
+            FROM formatted_events fe
+            JOIN events e ON fe.event_code = e.event_code
+            WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
+            ORDER BY fe.formatted_date DESC, fe.event_code;
         """
 
         result_proxy = db.session.execute(query)
