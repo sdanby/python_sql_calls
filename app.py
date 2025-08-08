@@ -406,6 +406,10 @@ def get_results():
     try:
         print("Fetching results from the database...")
 
+        # Get limit from query params, default to 15, clamp to max 100
+        limit = request.args.get('limit', default=15, type=int)
+        limit = max(1, min(limit, 100))  # Prevent abuse
+
         query = """
             WITH formatted_events AS (
               SELECT *,
