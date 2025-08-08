@@ -417,7 +417,7 @@ def get_results():
               SELECT DISTINCT formatted_date
               FROM formatted_events
               ORDER BY formatted_date DESC
-              LIMIT 15
+              LIMIT :limit
             )
             
             SELECT 
