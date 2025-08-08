@@ -436,7 +436,7 @@ def get_results():
             ORDER BY fe.formatted_date DESC, fe.event_code;
         """
 
-        result_proxy = db.session.execute(query)
+        result_proxy = db.session.execute(query, {'limit': limit})
         rows = result_proxy.fetchall()
         columns = result_proxy.keys()
         result = [dict(zip(columns, row)) for row in rows]
