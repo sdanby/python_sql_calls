@@ -50,6 +50,9 @@ class ParkrunEvent(db.Model):
     coeff = db.Column(db.Float)
     obs = db.Column(db.Integer)
     coeff_event = db.Column(db.Float)
+    avg_time = db.Column(db.Double)
+    avgtimelim12 = db.Column(db.Double)
+    avgtimelim5 = db.Column(db.Double)
 
     def to_dict(self):
        return {
@@ -60,8 +63,10 @@ class ParkrunEvent(db.Model):
             'event_number' : self.event_number,
             'coeff' : self.coeff,
             'obs' : self.obs,
-            'coeff_event' : self.coeff_event
-
+            'coeff_event' : self.coeff_event,
+            'avg_time' : self.avg_time,            
+            'avgtimelim12' : self.avgtimelim12,           
+            'avgtimelim5' : self.avgtimelim5
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -437,7 +442,9 @@ def get_results():
               fe.coeff,
               fe.obs,
               fe.coeff_event,
-              fe.avg_time
+              fe.avg_time,
+              fe.avgtimelim12,
+              fe.avgtimelim5
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
@@ -478,7 +485,9 @@ def get_resultsAll():
               fe.coeff,
               fe.obs,
               fe.coeff_event,
-              fe.avg_time
+              fe.avg_time,
+              fe.avgtimelim12,
+              fe.avgtimelim5
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             ORDER BY fe.formatted_date DESC, fe.event_code;
