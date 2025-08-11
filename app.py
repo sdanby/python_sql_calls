@@ -105,6 +105,9 @@ def get_event_positions():
         query = query.filter(EventPosition.event_code == event_code)
     elif event_date is not None:
         query = query.filter(EventPosition.event_date == event_date)
+
+   # Order by position (or event_position if that's your column name)
+    query = query.order_by(EventPosition.position)
     
     event_positions = query.all()
 
