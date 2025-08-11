@@ -50,9 +50,9 @@ class ParkrunEvent(db.Model):
     coeff = db.Column(db.Float)
     obs = db.Column(db.Integer)
     coeff_event = db.Column(db.Float)
-    avg_time = db.Column(db.Double)
-    avgtimelim12 = db.Column(db.Double)
-    avgtimelim5 = db.Column(db.Double)
+    avg_time = db.Column(db.Float)
+    avgtimelim12 = db.Column(db.Float)
+    avgtimelim5 = db.Column(db.Float)
 
     def to_dict(self):
        return {
