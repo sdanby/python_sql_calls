@@ -53,6 +53,7 @@ class ParkrunEvent(db.Model):
     avg_time = db.Column(db.Float)
     avgtimelim12 = db.Column(db.Float)
     avgtimelim5 = db.Column(db.Float)
+    tourist_count = db.Column(db.Integer)
 
     def to_dict(self):
        return {
@@ -67,6 +68,7 @@ class ParkrunEvent(db.Model):
             'avg_time' : self.avg_time,            
             'avgtimelim12' : self.avgtimelim12,           
             'avgtimelim5' : self.avgtimelim5
+            'tourist_count' : self.tourist_count
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -488,6 +490,7 @@ def get_resultsAll():
               fe.avg_time,
               fe.avgtimelim12,
               fe.avgtimelim5
+              fe.tourist_count
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             ORDER BY fe.formatted_date DESC, fe.event_code;
