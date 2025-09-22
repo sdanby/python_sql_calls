@@ -446,7 +446,8 @@ def get_results():
               fe.coeff_event,
               fe.avg_time,
               fe.avgtimelim12,
-              fe.avgtimelim5
+              fe.avgtimelim5,
+              fe.tourist_count
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
@@ -489,7 +490,7 @@ def get_resultsAll():
               fe.coeff_event,
               fe.avg_time,
               fe.avgtimelim12,
-              fe.avgtimelim5
+              fe.avgtimelim5,
               fe.tourist_count
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
