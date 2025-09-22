@@ -412,7 +412,7 @@ def fetch_event_data():
 
 @app.route('/results', methods=['GET'])
 def get_results():
-    """Get most recent results."""
+    """Get most recent results or all results from a supplied start date (inclusive)."""
     try:
         print("Fetching results from the database...")
 
@@ -420,41 +420,79 @@ def get_results():
         limit = request.args.get('limit', default=15, type=int)
         limit = max(1, min(limit, 100))  # Prevent abuse
 
-        query = """
-            WITH formatted_events AS (
-              SELECT *,
-                     substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
-              FROM parkrun_events
-            ),
-            
-            latest_dates AS (
-              SELECT DISTINCT formatted_date
-              FROM formatted_events
-              ORDER BY formatted_date DESC
-              LIMIT :limit
-            )
-            
-            SELECT 
-              fe.event_code,
-              e.event_name,
-              fe.event_date,
-              fe.last_position,
-              fe.volunteers,
-              fe.event_number,
-              fe.coeff,
-              fe.obs,
-              fe.coeff_event,
-              fe.avg_time,
-              fe.avgtimelim12,
-              fe.avgtimelim5,
-              fe.tourist_count
-            FROM formatted_events fe
-            JOIN events e ON fe.event_code = e.event_code
-            WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
-            ORDER BY fe.formatted_date DESC, fe.event_code;
-        """
+        # Optional start date (YYYY-MM-DD). If provided we'll return all records from that date (inclusive).
+        start_date = request.args.get('date', default=None, type=str)
+        params = {'limit': limit}
 
-        result_proxy = db.session.execute(query, {'limit': limit})
+        if start_date:
+            # validate format
+            try:
+                datetime.strptime(start_date, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+
+            query = """
+                SELECT 
+                  fe.event_code,
+                  e.event_name,
+                  fe.event_date,
+                  fe.last_position,
+                  fe.volunteers,
+                  fe.event_number,
+                  fe.coeff,
+                  fe.obs,
+                  fe.coeff_event,
+                  fe.avg_time,
+                  fe.avgtimelim12,
+                  fe.avgtimelim5,
+                  fe.tourist_count
+                FROM (
+                  SELECT *,
+                         substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+                  FROM parkrun_events
+                ) fe
+                JOIN events e ON fe.event_code = e.event_code
+                WHERE fe.formatted_date >= :start_date
+                ORDER BY fe.formatted_date DESC, fe.event_code;
+            """
+            params['start_date'] = start_date
+        else:
+            # original latest-n-dates query
+            query = """
+                WITH formatted_events AS (
+                  SELECT *,
+                         substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+                  FROM parkrun_events
+                ),
+                
+                latest_dates AS (
+                  SELECT DISTINCT formatted_date
+                  FROM formatted_events
+                  ORDER BY formatted_date DESC
+                  LIMIT :limit
+                )
+                
+                SELECT 
+                  fe.event_code,
+                  e.event_name,
+                  fe.event_date,
+                  fe.last_position,
+                  fe.volunteers,
+                  fe.event_number,
+                  fe.coeff,
+                  fe.obs,
+                  fe.coeff_event,
+                  fe.avg_time,
+                  fe.avgtimelim12,
+                  fe.avgtimelim5,
+                  fe.tourist_count
+                FROM formatted_events fe
+                JOIN events e ON fe.event_code = e.event_code
+                WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
+                ORDER BY fe.formatted_date DESC, fe.event_code;
+            """
+
+        result_proxy = db.session.execute(query, params)
         rows = result_proxy.fetchall()
         columns = result_proxy.keys()
         result = [dict(zip(columns, row)) for row in rows]
