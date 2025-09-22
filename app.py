@@ -67,7 +67,7 @@ class ParkrunEvent(db.Model):
             'coeff_event' : self.coeff_event,
             'avg_time' : self.avg_time,            
             'avgtimelim12' : self.avgtimelim12,           
-            'avgtimelim5' : self.avgtimelim5
+            'avgtimelim5' : self.avgtimelim5,
             'tourist_count' : self.tourist_count
         }
 
