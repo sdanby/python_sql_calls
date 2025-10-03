@@ -54,7 +54,7 @@ class ParkrunEvent(db.Model):
     avgtimelim12 = db.Column(db.Float)
     avgtimelim5 = db.Column(db.Float)
     tourist_count = db.Column(db.Integer)
-    avg_Age = db.Column(db.Float)
+    avg_age = db.Column(db.Float)
 
     def to_dict(self):
        return {
@@ -70,7 +70,7 @@ class ParkrunEvent(db.Model):
             'avgtimelim12' : self.avgtimelim12,           
             'avgtimelim5' : self.avgtimelim5,
             'tourist_count' : self.tourist_count,
-            'avg_Age' : self.avg_Age
+            'avg_age' : self.avg_age
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -448,7 +448,7 @@ def get_results():
                   fe.avgtimelim12,
                   fe.avgtimelim5,
                   fe.tourist_count,
-                  fe.avg_Age
+                  fe.avg_age
                 FROM (
                   SELECT *,
                          substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
@@ -489,7 +489,7 @@ def get_results():
                   fe.avgtimelim12,
                   fe.avgtimelim5,
                   fe.tourist_count,
-                  fe.avg_Age
+                  fe.avg_age
                 FROM formatted_events fe
                 JOIN events e ON fe.event_code = e.event_code
                 WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
@@ -534,7 +534,7 @@ def get_resultsAll():
               fe.avgtimelim12,
               fe.avgtimelim5,
               fe.tourist_count,
-              fe.avg_Age
+              fe.avg_age
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             ORDER BY fe.formatted_date DESC, fe.event_code;
