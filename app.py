@@ -54,6 +54,7 @@ class ParkrunEvent(db.Model):
     avgtimelim12 = db.Column(db.Float)
     avgtimelim5 = db.Column(db.Float)
     tourist_count = db.Column(db.Integer)
+    regulars = db.Column(db.Integer)
     avg_age = db.Column(db.Float)
 
     def to_dict(self):
@@ -70,6 +71,7 @@ class ParkrunEvent(db.Model):
             'avgtimelim12' : self.avgtimelim12,           
             'avgtimelim5' : self.avgtimelim5,
             'tourist_count' : self.tourist_count,
+            'regulars' : self.regulars,
             'avg_age' : self.avg_age
         }
 
@@ -448,6 +450,7 @@ def get_results():
                   fe.avgtimelim12,
                   fe.avgtimelim5,
                   fe.tourist_count,
+                  fe.regulars,
                   fe.avg_age
                 FROM (
                   SELECT *,
@@ -489,6 +492,7 @@ def get_results():
                   fe.avgtimelim12,
                   fe.avgtimelim5,
                   fe.tourist_count,
+                  fe.regulars,
                   fe.avg_age
                 FROM formatted_events fe
                 JOIN events e ON fe.event_code = e.event_code
@@ -534,6 +538,7 @@ def get_resultsAll():
               fe.avgtimelim12,
               fe.avgtimelim5,
               fe.tourist_count,
+              fe.regulars,
               fe.avg_age
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
