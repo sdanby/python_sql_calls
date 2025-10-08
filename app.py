@@ -54,6 +54,7 @@ class ParkrunEvent(db.Model):
     avgtimelim12 = db.Column(db.Float)
     avgtimelim5 = db.Column(db.Float)
     tourist_count = db.Column(db.Integer)
+    super_tourist_count = db.Column(db.Integer)
     regulars = db.Column(db.Integer)
     avg_age = db.Column(db.Float)
 
@@ -71,6 +72,7 @@ class ParkrunEvent(db.Model):
             'avgtimelim12' : self.avgtimelim12,           
             'avgtimelim5' : self.avgtimelim5,
             'tourist_count' : self.tourist_count,
+            'super_tourist_count' : self.tourist_count,
             'regulars' : self.regulars,
             'avg_age' : self.avg_age
         }
@@ -450,6 +452,7 @@ def get_results():
                   fe.avgtimelim12,
                   fe.avgtimelim5,
                   fe.tourist_count,
+                  fe.super_tourist_count,
                   fe.regulars,
                   fe.avg_age
                 FROM (
@@ -492,6 +495,7 @@ def get_results():
                   fe.avgtimelim12,
                   fe.avgtimelim5,
                   fe.tourist_count,
+                  fe.super_tourist_count,
                   fe.regulars,
                   fe.avg_age
                 FROM formatted_events fe
@@ -538,6 +542,7 @@ def get_resultsAll():
               fe.avgtimelim12,
               fe.avgtimelim5,
               fe.tourist_count,
+              fe.super_tourist_count,
               fe.regulars,
               fe.avg_age
             FROM formatted_events fe
