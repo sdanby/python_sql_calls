@@ -81,7 +81,7 @@ class ParkrunEvent(db.Model):
             'tourist_count' : self.tourist_count,
             'super_tourist_count' : self.tourist_count,
             'regulars' : self.regulars,
-            'avg_age' : self.avg_age
+            'avg_age' : self.avg_age,
             'first_timers_count' : self.first_timers_count,
             'returners_count' : self.returners_count,
             'club_count' : self.club_count,
