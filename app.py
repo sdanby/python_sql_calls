@@ -57,6 +57,13 @@ class ParkrunEvent(db.Model):
     super_tourist_count = db.Column(db.Integer)
     regulars = db.Column(db.Integer)
     avg_age = db.Column(db.Float)
+    first_timers_count = db.Column(db.Integer)
+    returners_count = db.Column(db.Integer)
+    club_count = db.Column(db.Integer)
+    pb_count = db.Column(db.Integer)
+    recentBest_count = db.Column(db.Integer)
+    eligible_time_count = db.Column(db.Integer)
+    unknown_count = db.Column(db.Integer)
 
     def to_dict(self):
        return {
@@ -75,6 +82,13 @@ class ParkrunEvent(db.Model):
             'super_tourist_count' : self.tourist_count,
             'regulars' : self.regulars,
             'avg_age' : self.avg_age
+            'first_timers_count' : self.first_timers_count,
+            'returners_count' : self.returners_count,
+            'club_count' : self.club_count,
+            'pb_count' : self.pb_count,
+            'recentBest_count' : self.recentBest_count,
+            'eligible_time_count' : self.eligible_time_count,
+            'unknown_count' : self.unknown_count
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -454,7 +468,14 @@ def get_results():
                   fe.tourist_count,
                   fe.super_tourist_count,
                   fe.regulars,
-                  fe.avg_age
+                  fe.avg_age,
+                  fe.first_timers_count,
+                  fe.returners_count,
+                  fe.club_count,
+                  fe.pb_count,
+                  fe.recentBest_count,
+                  fe.eligible_time_count,
+                  fe.unknown_count
                 FROM (
                   SELECT *,
                          substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
@@ -497,7 +518,14 @@ def get_results():
                   fe.tourist_count,
                   fe.super_tourist_count,
                   fe.regulars,
-                  fe.avg_age
+                  fe.avg_age,
+                  fe.first_timers_count,
+                  fe.returners_count,
+                  fe.club_count,
+                  fe.pb_count,
+                  fe.recentBest_count,
+                  fe.eligible_time_count,
+                  fe.unknown_count
                 FROM formatted_events fe
                 JOIN events e ON fe.event_code = e.event_code
                 WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
@@ -544,7 +572,14 @@ def get_resultsAll():
               fe.tourist_count,
               fe.super_tourist_count,
               fe.regulars,
-              fe.avg_age
+              fe.avg_age,
+              fe.first_timers_count,
+              fe.returners_count,
+              fe.club_count,
+              fe.pb_count,
+              fe.recentBest_count,
+              fe.eligible_time_count,
+              fe.unknown_count
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             ORDER BY fe.formatted_date DESC, fe.event_code;
