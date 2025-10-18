@@ -61,7 +61,7 @@ class ParkrunEvent(db.Model):
     returners_count = db.Column(db.Integer)
     club_count = db.Column(db.Integer)
     pb_count = db.Column(db.Integer)
-    recentBest_count = db.Column(db.Integer)
+    recentbest_count = db.Column(db.Integer)
     eligible_time_count = db.Column(db.Integer)
     unknown_count = db.Column(db.Integer)
 
@@ -86,7 +86,7 @@ class ParkrunEvent(db.Model):
             'returners_count' : self.returners_count,
             'club_count' : self.club_count,
             'pb_count' : self.pb_count,
-            'recentBest_count' : self.recentBest_count,
+            'recentbest_count' : self.recentbest_count,
             'eligible_time_count' : self.eligible_time_count,
             'unknown_count' : self.unknown_count
         }
@@ -473,7 +473,7 @@ def get_results():
                   fe.returners_count,
                   fe.club_count,
                   fe.pb_count,
-                  fe.recentBest_count,
+                  fe.recentbest_count,
                   fe.eligible_time_count,
                   fe.unknown_count
                 FROM (
@@ -523,7 +523,7 @@ def get_results():
                   fe.returners_count,
                   fe.club_count,
                   fe.pb_count,
-                  fe.recentBest_count,
+                  fe.recentbest_count,
                   fe.eligible_time_count,
                   fe.unknown_count
                 FROM formatted_events fe
@@ -577,7 +577,7 @@ def get_resultsAll():
               fe.returners_count,
               fe.club_count,
               fe.pb_count,
-              fe.recentBest_count,
+              fe.recentbest_count,
               fe.eligible_time_count,
               fe.unknown_count
             FROM formatted_events fe
