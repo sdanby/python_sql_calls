@@ -53,7 +53,7 @@ class EventPosition(db.Model):
     local_time_ratio= db.Column(db.Float)
     adj2_time_seconds= db.Column(db.Float)
     adj2_time_ratio= db.Column(db.Float)
-    distinct_course_long= db.Column(db.Integer)
+    distinct_courses_long= db.Column(db.Integer)
     last_event_code_count_long= db.Column(db.Integer)
     total_runs_long= db.Column(db.Integer)
     regular=db.Column(db.String)
