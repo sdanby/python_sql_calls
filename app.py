@@ -110,7 +110,7 @@ class ParkrunEvent(db.Model):
             'recentbest_count' : self.recentbest_count,
             'eligible_time_count' : self.eligible_time_count,
             'unknown_count' : self.unknown_count,
-            'super_returner_count : self.super_returner_count
+            'super_returner_count' : self.super_returner_count
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -549,7 +549,7 @@ def get_results():
                   fe.recentbest_count,
                   fe.eligible_time_count,
                   fe.unknown_count,
-                  f.super_returner_count
+                  fe.super_returner_count
                 FROM formatted_events fe
                 JOIN eventse e ON fe.event_code = e.event_code
                 WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
