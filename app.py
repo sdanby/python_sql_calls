@@ -39,6 +39,26 @@ class EventPosition(db.Model):
     club = db.Column(db.String)
     comment = db.Column(db.String)
     athlete_code = db.Column(db.String)
+    event_eligible_appearances = db.Column(db.Integer)
+    time_ratio= db.Column(db.Float)
+    adj_time_seconds= db.Column(db.Float)
+    adj_time_ratio= db.Column(db.Float)
+    event_code_count= db.Column(db.Integer)
+    tourist_flag=db.Column(db.String)
+    last_event_code_count= db.Column(db.Integer)
+    total_runs= db.Column(db.Integer)
+    age_ratio_male= db.Column(db.Float)
+    age_ratio_sex= db.Column(db.Float)
+    super_tourist= db.Column(db.Integer)
+    local_time_ratio= db.Column(db.Float)
+    adj2_time_seconds= db.Column(db.Float)
+    adj2_time_ratio= db.Column(db.Float)
+    distinct_course_long= db.Column(db.Integer)
+    last_event_code_count_long= db.Column(db.Integer)
+    total_runs_long= db.Column(db.Integer)
+    regular=db.Column(db.String)
+    returner=db.Column(db.String)
+    super_returner=db.Column(db.String)
 
 class ParkrunEvent(db.Model):
     __tablename__ = 'parkrun_events'
@@ -64,6 +84,7 @@ class ParkrunEvent(db.Model):
     recentbest_count = db.Column(db.Integer)
     eligible_time_count = db.Column(db.Integer)
     unknown_count = db.Column(db.Integer)
+    super_returner_count= db.Column(db.Integer)
 
     def to_dict(self):
        return {
@@ -88,7 +109,8 @@ class ParkrunEvent(db.Model):
             'pb_count' : self.pb_count,
             'recentbest_count' : self.recentbest_count,
             'eligible_time_count' : self.eligible_time_count,
-            'unknown_count' : self.unknown_count
+            'unknown_count' : self.unknown_count,
+            'super_returner_count : self.super_returner_count
         }
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
@@ -475,7 +497,8 @@ def get_results():
                   fe.pb_count,
                   fe.recentbest_count,
                   fe.eligible_time_count,
-                  fe.unknown_count
+                  fe.unknown_count,
+                  fe.super_returner_count
                 FROM (
                   SELECT *,
                          substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
@@ -525,9 +548,10 @@ def get_results():
                   fe.pb_count,
                   fe.recentbest_count,
                   fe.eligible_time_count,
-                  fe.unknown_count
+                  fe.unknown_count,
+                  f.super_returner_count
                 FROM formatted_events fe
-                JOIN events e ON fe.event_code = e.event_code
+                JOIN eventse e ON fe.event_code = e.event_code
                 WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
                 ORDER BY fe.formatted_date DESC, fe.event_code;
             """
@@ -579,7 +603,8 @@ def get_resultsAll():
               fe.pb_count,
               fe.recentbest_count,
               fe.eligible_time_count,
-              fe.unknown_count
+              fe.unknown_count,
+              fe.super_returner_count
             FROM formatted_events fe
             JOIN events e ON fe.event_code = e.event_code
             ORDER BY fe.formatted_date DESC, fe.event_code;
