@@ -551,7 +551,7 @@ def get_results():
                   fe.unknown_count,
                   fe.super_returner_count
                 FROM formatted_events fe
-                JOIN eventse e ON fe.event_code = e.event_code
+                JOIN events e ON fe.event_code = e.event_code
                 WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
                 ORDER BY fe.formatted_date DESC, fe.event_code;
             """
