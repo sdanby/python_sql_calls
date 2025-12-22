@@ -24,6 +24,7 @@ class Event(db.Model):
     __tablename__ = 'events'
     event_code = db.Column(db.Integer, primary_key=True)
     event_name = db.Column(db.String, nullable=False)
+    display_name = db.Column(db.String, nullable=False)
 
 class EventPosition(db.Model):
     __tablename__ = 'eventpositions'
@@ -620,6 +621,102 @@ def get_resultsAll():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/eventinfo', methods=['GET'])
+def get_event_info():
+    """Return event_name and event_number for a supplied event_number/event_code/event_name and event_date.
+       Accepts query params: event_number (int) OR event_code (int) OR event_name (str), plus event_date (str: DD/MM/YYYY or YYYY-MM-DD).
+    """
+    event_number = request.args.get('event_number', default=None, type=int)
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_name = request.args.get('display_name', default=None, type=str)
+    event_date = request.args.get('event_date', default=None, type=str)
+
+    # Validate minimal inputs
+    if event_date is None or (event_number is None and event_code is None and event_name is None):
+        return jsonify({"error": "Provide event_date and one of event_number, event_code or event_name"}), 400
+
+    try:
+        conn, cursor, render_db_conn, render_cursor = connections()
+        record = None
+        # Prepare event_date variants to match DB formats (DD/MM/YYYY or YYYY-MM-DD)
+        dates_to_try = [event_date]
+        try:
+            # If input is YYYY-MM-DD convert to DD/MM/YYYY
+            import re
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', event_date or ''):
+                parts = event_date.split('-')
+                alt = f"{parts[2]}/{parts[1]}/{parts[0]}"
+                if alt not in dates_to_try:
+                    dates_to_try.append(alt)
+            # If input is DD/MM/YYYY convert to YYYY-MM-DD
+            if re.match(r'^\d{2}/\d{2}/\d{4}$', event_date or ''):
+                p = event_date.split('/')
+                alt2 = f"{p[2]}-{p[1]}-{p[0]}"
+                if alt2 not in dates_to_try:
+                    dates_to_try.append(alt2)
+        except Exception:
+            pass
+
+        # Helper to execute a query with date variants
+        def try_query(sql, params_base):
+            for d in dates_to_try:
+                params = list(params_base) + [d]
+                cursor.execute(sql, tuple(params))
+                r = cursor.fetchone()
+                if r:
+                    return r
+            return None
+
+        # Prefer event_number lookup when provided
+        if event_number is not None:
+            sql = '''
+                SELECT pe.event_number, e.display_name, pe.event_code
+                FROM parkrun_events pe
+                LEFT JOIN events e ON pe.event_code = e.event_code
+                WHERE pe.event_number = ? AND pe.event_date = ?
+                LIMIT 1
+            '''
+            record = try_query(sql, [event_number])
+
+        # Fallback to event_code + event_date
+        if record is None and event_code is not None:
+            sql = '''
+                SELECT pe.event_number, e.display_name, pe.event_code
+                FROM parkrun_events pe
+                LEFT JOIN events e ON pe.event_code = e.event_code
+                WHERE pe.event_code = ? AND pe.event_date = ?
+                LIMIT 1
+            '''
+            record = try_query(sql, [event_code])
+
+        # Fallback to event_name + event_date (case-insensitive exact match)
+        if record is None and event_name is not None:
+            sql = '''
+                SELECT pe.event_number, e.display_name, pe.event_code
+                FROM parkrun_events pe
+                LEFT JOIN events e ON pe.event_code = e.event_code
+                WHERE LOWER(e.event_name) = LOWER(?) AND pe.event_date = ?
+                LIMIT 1
+            '''
+            record = try_query(sql, [event_name])
+
+        if record:
+            ev_number, ev_name, ev_code = record
+            return jsonify({
+                'event_number': ev_number,
+                'event_name': ev_name,
+                'event_code': ev_code
+            }), 200
+        return jsonify({"error": "Event not found"}), 404
+    except Exception as e:
+        logging.error(f"Error in get_event_info: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
