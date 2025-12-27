@@ -680,7 +680,7 @@ def get_event_info():
         app.logger.exception("get_event_info error")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/eventby_number', methods=['GET'])    
+@app.route('/api/eventby_number', methods=['GET'])
 def get_event_by_number():
     """Return event_date and optional event_name for a supplied event_code + event_number.
        Query params: event_code (int), event_number (int)
@@ -692,30 +692,26 @@ def get_event_by_number():
         return jsonify({"error": "Provide event_code and event_number"}), 400
 
     try:
-        conn, cursor, render_db_conn, render_cursor = connections()
-        cursor.execute('SELECT event_date FROM parkrun_events WHERE event_code = ? AND event_number = ? LIMIT 1', (event_code, event_number))
-        row = cursor.fetchone()
-        if not row:
+        # Use SQLAlchemy to query parkrun_events joined to events for display_name
+        q = db.session.query(ParkrunEvent, Event).join(Event, ParkrunEvent.event_code == Event.event_code)
+        rec = q.filter(ParkrunEvent.event_code == event_code, ParkrunEvent.event_number == event_number).first()
+
+        if not rec:
             return jsonify({"error": "Event not found"}), 404
-        event_date = row[0]
-        # Try to fetch a friendly display name if available
-        cursor.execute('SELECT display_name FROM events WHERE event_code = ? LIMIT 1', (event_code,))
-        r2 = cursor.fetchone()
-        display_name = r2[0] if r2 else None
+
+        pe, ev = rec  # ParkrunEvent, Event
+        display_name = ev.display_name or ev.event_name if ev is not None else None
+
         return jsonify({
-            'event_code': event_code,
-            'event_number': event_number,
-            'event_date': event_date,
+            'event_code': pe.event_code,
+            'event_number': pe.event_number,
+            'event_date': pe.event_date,
             'event_name': display_name
         }), 200
+
     except Exception as e:
-        logging.error(f"Error in get_event_by_number: {e}")
+        app.logger.exception("get_event_by_number error")
         return jsonify({"error": str(e)}), 500
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
