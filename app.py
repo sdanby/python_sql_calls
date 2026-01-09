@@ -140,66 +140,60 @@ def delete_duplicates():
     
 @app.route('/api/eventpositions', methods=['GET'])
 def get_event_positions():
-    event_code = request.args.get('event_code', default=None, type=int)  # Get event_code from request
-    event_date = request.args.get('event_date', default=None, type=str)  # Get event_date from request
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_date = request.args.get('event_date', default=None, type=str)
 
-    # Print statements for debugging
     print(f"Received event_code: {event_code}, event_date: {event_date}")
-    
-    query = EventPosition.query
 
-    # Building SQL query based on provided parameters
-    if event_code is not None and event_date is not None:
-        query = query.filter(EventPosition.event_code == event_code, EventPosition.event_date == event_date)
-    elif event_code is not None:
-        query = query.filter(EventPosition.event_code == event_code)
-    elif event_date is not None:
-        query = query.filter(EventPosition.event_date == event_date)
+    sql = text("""
+    SELECT ep.*, a.total_runs
+    FROM eventpositions ep
+    LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
+    WHERE (:event_code IS NULL OR ep.event_code = :event_code)
+      AND (:event_date IS NULL OR ep.event_date = :event_date)
+    ORDER BY ep.position
+    """)
 
-   # Order by position (or event_position if that's your column name)
-    query = query.order_by(EventPosition.position)
-    
-    event_positions = query.all()
+    params = {'event_code': event_code, 'event_date': event_date}
+    result = db.session.execute(sql, params)
 
-    # Print the fetched rows for debugging
-    #print(f"Fetched rows: {rows}")
+    rows = [dict(r) for r in result.fetchall()]
 
-    # Return as JSON
     return jsonify([{
-        'event_code': ep.event_code,
-        'event_date': ep.event_date,
-        'position': ep.position,
-        'name': ep.name,
-        'male_position': ep.male_position,
-        'male_count': ep.male_count,
-        'age_group': ep.age_group,
-        'age_grade': ep.age_grade,
-        'time': ep.time,
-        'club': ep.club,
-        'comment': ep.comment,
-        'athlete_code': ep.athlete_code,
-        'event_eligible_appearances' : ep.event_eligible_appearances,
-        'time_ratio' : ep.time_ratio,
-        'adj_time_seconds' : ep.adj_time_seconds,
-        'adj_time_ratio' : ep.adj_time_ratio,
-        'event_code_count' : ep.event_code_count,
-        'tourist_flag' : ep.tourist_flag,
-        'last_event_code_count' : ep.last_event_code_count,
-        'age_ratio_male' : ep.age_ratio_male,
-        'age_ratio_sex' : ep.age_ratio_sex,
-        'super_tourist' : ep.super_tourist,
-        'local_time_ratio' : ep.local_time_ratio,
-        'adj2_time_seconds' : ep.adj2_time_seconds,
-        'adj2_time_ratio' : ep.adj2_time_ratio, 
-        'distinct_courses_long' : ep.distinct_courses_long,
-        'last_event_code_count_long' : ep.last_event_code_count_long,
-        'total_runs_long' : ep.total_runs_long,
-        'regular' : ep.regular,
-        'returner' : ep.returner,
-        'super_returner' : ep.super_returner
-
-        
-    } for ep in event_positions])
+        'event_code': r.get('event_code'),
+        'event_date': r.get('event_date'),
+        'position': r.get('position'),
+        'name': r.get('name'),
+        'male_position': r.get('male_position'),
+        'male_count': r.get('male_count'),
+        'age_group': r.get('age_group'),
+        'age_grade': r.get('age_grade'),
+        'time': r.get('time'),
+        'club': r.get('club'),
+        'comment': r.get('comment'),
+        'athlete_code': r.get('athlete_code'),
+        'event_eligible_appearances': r.get('event_eligible_appearances'),
+        'time_ratio': r.get('time_ratio'),
+        'adj_time_seconds': r.get('adj_time_seconds'),
+        'adj_time_ratio': r.get('adj_time_ratio'),
+        'event_code_count': r.get('event_code_count'),
+        'tourist_flag': r.get('tourist_flag'),
+        'last_event_code_count': r.get('last_event_code_count'),
+        'age_ratio_male': r.get('age_ratio_male'),
+        'age_ratio_sex': r.get('age_ratio_sex'),
+        'super_tourist': r.get('super_tourist'),
+        'local_time_ratio': r.get('local_time_ratio'),
+        'adj2_time_seconds': r.get('adj2_time_seconds'),
+        'adj2_time_ratio': r.get('adj2_time_ratio'),
+        'distinct_courses_long': r.get('distinct_courses_long'),
+        'last_event_code_count_long': r.get('last_event_code_count_long'),
+        'total_runs_long': r.get('total_runs_long'),
+        'regular': r.get('regular'),
+        'returner': r.get('returner'),
+        'super_returner': r.get('super_returner'),
+        # new field from athletes table:
+        'total_runs': r.get('total_runs')
+    } for r in rows])
 
 @app.route('/api/eventpositions', methods=['DELETE'])
 def delete_event_positions():
