@@ -48,7 +48,6 @@ class EventPosition(db.Model):
     event_code_count= db.Column(db.Integer)
     tourist_flag=db.Column(db.String)
     last_event_code_count= db.Column(db.Integer)
-    total_runs= db.Column(db.Integer)
     age_ratio_male= db.Column(db.Float)
     age_ratio_sex= db.Column(db.Float)
     super_tourist= db.Column(db.Integer)
@@ -179,6 +178,27 @@ def get_event_positions():
         'club': ep.club,
         'comment': ep.comment,
         'athlete_code': ep.athlete_code,
+        'event_eligible_appearances' : ep.event_eligible_appearances,
+        'time_ratio' : ep.time_ratio,
+        'adj_time_seconds' : ep.adj_time_seconds,
+        'adj_time_ratio' : ep.adj_time_ratio,
+        'event_code_count' : ep.event_code_count,
+        'tourist_flag' : ep.tourist_flag,
+        'last_event_code_count' : ep.last_event_code_count,
+        'age_ratio_male' : ep.age_ratio_male,
+        'age_ratio_sex' : ep.age_ratio_sex,
+        'super_tourist' : ep.super_tourist,
+        'local_time_ratio' : ep.local_time_ratio,
+        'adj2_time_seconds' : ep.adj2_time_seconds,
+        'adj2_time_ratio' : ep.adj2_time_ratio, 
+        'distinct_courses_long' : ep.distinct_courses_long,
+        'last_event_code_count_long' : ep.last_event_code_count_long,
+        'total_runs_long' : ep.total_runs_long,
+        'regular' : ep.regular,
+        'returner' : ep.returner,
+        'super_returner' : ep.super_returner
+
+        
     } for ep in event_positions])
 
 @app.route('/api/eventpositions', methods=['DELETE'])
