@@ -219,6 +219,80 @@ def delete_event_positions():
         db.session.rollback()  # Rollback in case of error
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/eventTimeAdjustment', methods=['GET'])
+def get_event_time_adjustment():
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_date = request.args.get('event_date', default=None, type=str)
+
+    print(f"Received event_code: {event_code}, event_date: {event_date}")
+
+    sql = text("""
+    WITH tmp_time_adjustment AS (
+        SELECT 
+            e.event_date,
+            e.event_code,
+            time,
+            athlete_code,
+            age_ratio_male,
+            age_ratio_sex,
+            substring(e.event_date, 7, 4) || chr(45) || substring(e.event_date, 4, 2) || chr(45) || substring(e.event_date, 1, 2) AS formatted_date,
+            CASE
+                WHEN length(time) - length(replace(time, ':', '')) = 2 THEN
+                    CAST(substring(time, 1, strpos(time, ':') - 1) AS INTEGER) * 3600 +
+                    CAST(substring(time, strpos(time, ':') + 1, strpos(substring(time, strpos(time, ':') + 1), ':') - 1) AS INTEGER) * 60 +
+                    CAST(substring(time, length(time) - 1, 2) AS INTEGER)
+                ELSE
+                    CAST(substring(time, 1, strpos(time, ':') - 1) AS INTEGER) * 60 +
+                    CAST(substring(time, strpos(time, ':') + 1) AS INTEGER)
+            END AS time_seconds,
+            adj_time_seconds,
+            adj2_time_seconds,
+            coeff,
+            coeff_event
+        FROM eventpositions e
+        JOIN parkrun_events p ON e.event_code = p.event_code AND e.event_date = p.event_date
+        WHERE (:event_code IS NULL OR e.event_code = :event_code)
+          AND (:event_date IS NULL OR e.event_date = :event_date)
+    )
+    SELECT 
+        formatted_date,
+        event_code,
+        athlete_code,
+        coeff AS season_adj,
+        coeff + coeff_event - 1 AS event_adj,
+        age_ratio_male AS age_adj,
+        age_ratio_sex / age_ratio_male AS sex_adj,
+        time,
+        (CAST(time_seconds / coeff AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / coeff AS INTEGER) % 60)::text, 2, '0') AS season_adj_time,
+        (CAST(time_seconds / (coeff + coeff_event - 1) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) AS INTEGER) % 60)::text, 2, '0') AS event_adj_time,
+        (CAST(time_seconds / age_ratio_male AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / age_ratio_male AS INTEGER) % 60)::text, 2, '0') AS age_adj_time,
+        (CAST(time_seconds / age_ratio_sex AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / age_ratio_sex AS INTEGER) % 60)::text, 2, '0') AS age_sex_time,
+        (CAST(time_seconds / coeff / age_ratio_male AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / coeff / age_ratio_male AS INTEGER) % 60)::text, 2, '0') AS age_season_adj_time,
+        (CAST(time_seconds / coeff / age_ratio_sex AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / coeff / age_ratio_sex AS INTEGER) % 60)::text, 2, '0') AS age_sex_season_adj_time,
+        (CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_male AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_male AS INTEGER) % 60)::text, 2, '0') AS age_event_adj_time,
+        (CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_sex AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_sex AS INTEGER) % 60)::text, 2, '0') AS age_sex_event_adj_time,
+        time_seconds,
+        time_seconds / coeff AS season_adj_time_seconds,
+        time_seconds / (coeff + coeff_event - 1) AS event_adj_time_seconds,
+        time_seconds / age_ratio_male AS age_adj_time_seconds,
+        time_seconds / age_ratio_sex AS age_sex_adj_time_seconds,
+        time_seconds / coeff / age_ratio_male AS age_season_adj_time_seconds,
+        time_seconds / coeff / age_ratio_sex AS age_sex_season_adj_time_seconds,
+        time_seconds / (coeff + coeff_event - 1) / age_ratio_male AS age_event_adj_time_seconds,
+        time_seconds / (coeff + coeff_event - 1) / age_ratio_sex AS age_sex_event_adj_time_seconds
+    FROM tmp_time_adjustment
+    -- WHERE athlete_code = '528017'
+    ORDER BY age_event_adj_time
+    """)
+
+    params = {'event_code': event_code, 'event_date': event_date}
+    result = db.session.execute(sql, params)
+
+    rows = [dict(r) for r in result.fetchall()]
+
+    return jsonify(rows)
+
+
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
     event_code = request.args.get('event_code', default=None, type=int)
