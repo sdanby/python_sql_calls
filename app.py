@@ -803,6 +803,64 @@ def get_event_by_number():
         app.logger.exception("get_event_by_number error")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/athlete_runs', methods=['GET'])
+def get_athlete_runs():
+    athlete_code = request.args.get('athlete_code', type=str)
+    if not athlete_code:
+        return jsonify({'error': 'athlete_code is required'}), 400
+
+    sql = text("""
+        SELECT
+            ep.event_code,
+            ep.event_date,
+            ep.position,
+            ep.name,
+            ep.male_position,
+            ep.male_count,
+            ep.age_group,
+            ep.age_grade,
+            ep.time,
+            ep.club,
+            ep.comment,
+            ep.athlete_code,
+            ep.event_eligible_appearances,
+            ep.time_ratio,
+            ep.adj_time_seconds,
+            ep.adj_time_ratio,
+            ep.event_code_count,
+            ep.tourist_flag,
+            ep.last_event_code_count,
+            ep.total_runs,
+            ep.age_ratio_male,
+            ep.age_ratio_sex,
+            ep.super_tourist,
+            ep.local_time_ratio,
+            ep.adj2_time_seconds,
+            ep.adj2_time_ratio,
+            ep.distinct_courses_long,
+            ep.last_event_code_count_long,
+            ep.total_runs_long,
+            ep.current_age_estimate,
+            ep.regular,
+            ep.returner,
+            ep.super_returner,
+            a.name AS athlete_name,
+            a.club AS athlete_club,
+            a.min_dob,
+            a.last_age_estimate,
+            a.max_dob,
+            a.last_updated,
+            a.current_age_estimate AS athlete_current_age_estimate
+        FROM eventpositions ep
+        JOIN athletes a ON a.athlete_code = ep.athlete_code
+        WHERE ep.athlete_code = :athlete_code
+        ORDER BY ep.event_date, ep.position
+    """)
+
+    result = db.session.execute(sql, {'athlete_code': athlete_code})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
 
