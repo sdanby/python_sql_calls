@@ -850,7 +850,9 @@ def get_athlete_runs():
             a.last_age_estimate,
             a.max_dob,
             a.last_updated,
-            a.current_age_estimate AS athlete_current_age_estimate
+            a.current_age_estimate AS athlete_current_age_estimate,
+            a.sex,
+            a.total_runs
         FROM eventpositions ep
         JOIN athletes a ON a.athlete_code = ep.athlete_code
         WHERE ep.athlete_code = :athlete_code
