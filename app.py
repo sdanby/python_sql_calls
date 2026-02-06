@@ -813,6 +813,7 @@ def get_athlete_runs():
         SELECT
             ep.event_code,
             e.event_name AS event_name,
+            e.display_name AS event_display,
             ep.event_date,
             ep.position,
             ep.name,
