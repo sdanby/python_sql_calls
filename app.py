@@ -812,6 +812,7 @@ def get_athlete_runs():
     sql = text("""
         SELECT
             ep.event_code,
+            e.event_name AS event_name,
             ep.event_date,
             ep.position,
             ep.name,
@@ -855,6 +856,7 @@ def get_athlete_runs():
             a.total_runs
         FROM eventpositions ep
         JOIN athletes a ON a.athlete_code = ep.athlete_code
+        LEFT JOIN events e ON e.event_code = ep.event_code
         WHERE ep.athlete_code = :athlete_code
         ORDER BY substr(ep.event_date, 7, 4) || '-' || substr(ep.event_date, 4, 2) || '-' || substr(ep.event_date, 1, 2), ep.position
     """)
