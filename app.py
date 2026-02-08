@@ -862,7 +862,7 @@ def get_athlete_runs():
         JOIN athletes a ON a.athlete_code = ep.athlete_code
         LEFT JOIN events e ON e.event_code = ep.event_code
 		LEFT JOIN parkrun_events p ON ep.event_code=p.event_code and ep.event_date=p.event_date
-        WHERE ep.athlete_code = '528017'
+        WHERE ep.athlete_code = :athlete_code
         ORDER BY substr(ep.event_date, 7, 4) || '-' || substr(ep.event_date, 4, 2) || '-' || substr(ep.event_date, 1, 2), ep.position
     """)
 
