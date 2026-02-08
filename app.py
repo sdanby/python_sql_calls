@@ -852,13 +852,17 @@ def get_athlete_runs():
             a.last_age_estimate,
             a.max_dob,
             a.last_updated,
-            a.current_age_estimate AS athlete_current_age_estimate,
+            a.current_age_estimate AS athlete_current_age_estimate,            
             a.sex,
-            a.total_runs
+            a.total_runs,
+			p.coeff,
+			p.coeff_event,
+			p.event_number
         FROM eventpositions ep
         JOIN athletes a ON a.athlete_code = ep.athlete_code
         LEFT JOIN events e ON e.event_code = ep.event_code
-        WHERE ep.athlete_code = :athlete_code
+		LEFT JOIN parkrun_events p ON ep.event_code=p.event_code and ep.event_date=p.event_date
+        WHERE ep.athlete_code = '528017'
         ORDER BY substr(ep.event_date, 7, 4) || '-' || substr(ep.event_date, 4, 2) || '-' || substr(ep.event_date, 1, 2), ep.position
     """)
 
