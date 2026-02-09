@@ -858,7 +858,7 @@ def get_athlete_runs():
 			p.coeff,
 			p.coeff_event,
 			p.event_number,
-			p.last_postion
+			p.last_position
         FROM eventpositions ep
         JOIN athletes a ON a.athlete_code = ep.athlete_code
         LEFT JOIN events e ON e.event_code = ep.event_code
