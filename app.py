@@ -352,21 +352,32 @@ def get_last_positions():
     if event_code is None:
         return jsonify({"error": "event_code is required"}), 400
 
-    # Query to get last positions for the specified event_code
+    # Query to get the latest event date for the specified event_code
     try:
+        # First, get the latest date for this event_code
+        latest_date_subquery = (
+            db.session.query(func.max(EventPosition.event_date))
+            .filter(EventPosition.event_code == event_code)
+            .scalar()
+        )
+        
+        if not latest_date_subquery:
+            return jsonify({"message": "No records found for this event code"}), 404
+        
+        # Then get all positions for that latest date
         last_positions_query = (
             db.session.query(
                 EventPosition.event_code,
-                EventPosition.event_date,  # Get the event date directly
-                func.max(EventPosition.position).label('last_position')  # Find the last position for the week
+                EventPosition.event_date,
+                EventPosition.position
             )
-            .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
-            .group_by(
-                EventPosition.event_code,
-                EventPosition.event_date  # Group by event code and event date
+            .filter(
+                EventPosition.event_code == event_code,
+                EventPosition.event_date == latest_date_subquery
             )
             .all()
         )
+        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -386,13 +397,19 @@ def get_last_positions():
         except:
             return str(date_str)  # Return as-is if conversion fails
 
+    # Get the maximum position from the results
+    max_position = max(row.position for row in last_positions_query) if last_positions_query else 0
+    
+    # Use the first row for event info (they should all have same date and event_code)
+    first_row = last_positions_query[0]
+    
     # Prepare the response with both original and formatted dates
     last_positions = [{
-        'event_code': code,
-        'event_date': date,  # Use event_date directly (original dd/mm/yyyy format)
-        'formatted_date': format_date_to_iso(str(date)),  # ISO format (yyyy-mm-dd) for proper sorting
-        'last_position': last_position
-    } for code, date, last_position in last_positions_query]
+        'event_code': first_row.event_code,
+        'event_date': first_row.event_date,  # Use event_date directly (original dd/mm/yyyy format)
+        'formatted_date': format_date_to_iso(str(first_row.event_date)),  # ISO format (yyyy-mm-dd) for proper sorting
+        'last_position': max_position
+    }]
 
     return jsonify(last_positions)  # Return the retrieved last positions as JSON
 
