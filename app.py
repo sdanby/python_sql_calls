@@ -346,7 +346,6 @@ def get_parkrun_event():
 from flask import jsonify, request
 from sqlalchemy import func
 
-@app.route('/api/last_positions', methods=['GET'])
 def get_last_positions():
     event_code = request.args.get('event_code', default=None, type=int)
 
@@ -374,10 +373,24 @@ def get_last_positions():
     if not last_positions_query:
         return jsonify({"message": "No records found for this event code"}), 404
 
-    # Prepare the response
+    # Helper function to convert dd/mm/yyyy to ISO format (yyyy-mm-dd)
+    def format_date_to_iso(date_str):
+        try:
+            if isinstance(date_str, str) and '/' in date_str:
+                # Assume dd/mm/yyyy format
+                parts = date_str.split('/')
+                if len(parts) == 3:
+                    day, month, year = parts
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            return str(date_str)  # Return as-is if not in expected format
+        except:
+            return str(date_str)  # Return as-is if conversion fails
+
+    # Prepare the response with both original and formatted dates
     last_positions = [{
         'event_code': code,
-        'event_date': date,  # Use event_date directly
+        'event_date': date,  # Use event_date directly (original dd/mm/yyyy format)
+        'formatted_date': format_date_to_iso(str(date)),  # ISO format (yyyy-mm-dd) for proper sorting
         'last_position': last_position
     } for code, date, last_position in last_positions_query]
 
