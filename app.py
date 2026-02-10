@@ -346,6 +346,7 @@ def get_parkrun_event():
 from flask import jsonify, request
 from sqlalchemy import func
 
+@app.route('/api/last_positions', methods=['GET'])
 def get_last_positions():
     event_code = request.args.get('event_code', default=None, type=int)
 
