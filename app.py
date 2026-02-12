@@ -5,6 +5,7 @@ from sqlalchemy import Date
 from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
+from lists_api import lists_bp # 3. Import the blueprint
 import re
 #from consistency import get_parkrun_data
 
@@ -15,6 +16,9 @@ CORS(app)  # Enable CORS for all routes
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://parkrundata_user:m3UE0JWilwRNS1MBVgN2kr0BnIOVZUmH@dpg-cs2r25dsvqrc73dpgdd0-a.frankfurt-postgres.render.com:5432/parkrundata'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+
+# 4. Register the blueprint with your main app
+app.register_blueprint(lists_bp)
 
 class ProcessingStatus(db.Model):
     id = db.Column(db.Integer, primary_key=True)
