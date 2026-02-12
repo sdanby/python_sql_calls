@@ -1,6 +1,5 @@
 from flask import Blueprint, jsonify
 from sqlalchemy import text
-from app import db  # Import the db instance from your main app file
 
 # 1. Create a new Blueprint
 lists_bp = Blueprint('lists_api', __name__)
@@ -11,6 +10,7 @@ def get_fastest_runs_by_athlete():
     """
     API endpoint to get the single fastest run for every athlete.
     """
+    from app import db  # Import db here to avoid circular import
     try:
         # This query finds the row corresponding to the fastest time for each athlete.
         sql_query = text("""
@@ -50,3 +50,5 @@ def get_fastest_runs_by_athlete():
         # It's good practice to log the error
         print(f"Database error in get_fastest_runs_by_athlete: {e}")
         return jsonify({"error": "Failed to fetch data from the database"}), 500
+
+
