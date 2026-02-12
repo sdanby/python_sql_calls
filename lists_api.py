@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify
 from sqlalchemy import text
-from backendAPI import db  # Import the db instance from your main app file
+from app import db  # Import the db instance from your main app file
 
 # 1. Create a new Blueprint
 lists_bp = Blueprint('lists_api', __name__)
