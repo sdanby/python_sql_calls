@@ -25,7 +25,8 @@ def get_fastest_runs_by_athlete():
                 age_grade,
                 club,
                 comment,
-                time
+                time,
+                event_name
             FROM athlete_pbs
             ORDER BY time_seconds ASC
             LIMIT 1000;
