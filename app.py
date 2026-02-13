@@ -26,6 +26,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
+# Add this block to automatically close sessions
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    db.session.remove()
+
 # 4. Register the blueprint with your main app
 app.register_blueprint(lists_bp)
 
