@@ -30,19 +30,13 @@ def get_fastest_runs_by_athlete():
             ORDER BY time_seconds ASC
             LIMIT 1000;
         """)
-        
         result_proxy = db.session.execute(sql_query)
-        
-        # Fetch column names from the result proxy
         column_names = result_proxy.keys()
-        
-        # Create a list of dictionaries for the JSON response
         results = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
-        
+        db.session.commit()  # <-- Add this line
         return jsonify(results)
-
     except Exception as e:
-        # It's good practice to log the error
+        db.session.rollback()  # <-- Add this line for safety
         print(f"Database error in get_fastest_runs_by_athlete: {e}")
         return jsonify({"error": "Failed to fetch data from the database"}), 500
 
