@@ -13,26 +13,21 @@ def get_fastest_runs_by_athlete():
     from app import db  # Import db here to avoid circular import
     try:
         # This query finds the row corresponding to the fastest time for each athlete.
+        # This query reads directly from the pre-calculated and indexed materialized view for maximum performance.
         sql_query = text("""
             SELECT
-                e.event_code,
-                e.event_date,
-                e.athlete_code,
-                e.position,
-                e.name,
-                e.age_group,
-                e.age_grade,
-                e.club,
-                e.comment,
-                e.time
-            FROM eventpositions e
-            INNER JOIN (
-                SELECT athlete_code, MIN(time) as min_time
-                FROM eventpositions
-                GROUP BY athlete_code
-            ) AS sub
-            ON e.athlete_code = sub.athlete_code AND e.time = sub.min_time
-            ORDER BY e.time
+                event_code,
+                event_date,
+                athlete_code,
+                position,
+                name,
+                age_group,
+                age_grade,
+                club,
+                comment,
+                time
+            FROM athlete_pbs
+            ORDER BY time_seconds ASC
             LIMIT 1000;
         """)
         
