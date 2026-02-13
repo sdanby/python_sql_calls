@@ -17,6 +17,13 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://parkrundata_user:m3UE0JWil
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+# Add these engine options to manage the connection pool
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 10,
+    'pool_recycle': 280,
+    'pool_pre_ping': True
+}
+
 # 4. Register the blueprint with your main app
 app.register_blueprint(lists_bp)
 
