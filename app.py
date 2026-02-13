@@ -15,7 +15,7 @@ CORS(app)  # Enable CORS for all routes
 # Replace the following credentials with your actual database credentials
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://parkrundata_user:m3UE0JWilwRNS1MBVgN2kr0BnIOVZUmH@dpg-cs2r25dsvqrc73dpgdd0-a.frankfurt-postgres.render.com:5432/parkrundata'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+
 
 # Add these engine options to manage the connection pool
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
@@ -23,6 +23,8 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 280,
     'pool_pre_ping': True
 }
+
+db = SQLAlchemy(app)
 
 # 4. Register the blueprint with your main app
 app.register_blueprint(lists_bp)
