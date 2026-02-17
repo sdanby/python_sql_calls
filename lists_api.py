@@ -37,7 +37,7 @@ def get_fastest_runs_by_athlete():
     try:
         # This query finds the row corresponding to the fastest time for each athlete.
         # This query reads directly from the pre-calculated and indexed materialized view for maximum performance.
-        sql_query = text("""
+        sql_query = text(f"""
         SELECT
             event_code,
             event_date,
