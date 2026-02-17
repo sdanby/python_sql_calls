@@ -5,7 +5,7 @@ from sqlalchemy import Date
 from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
-from lists_api import lists_bp # 3. Import the blueprint
+from lists_api import lists_bp, get_adjustment_fields_sql 
 import re
 #from consistency import get_parkrun_data
 
