@@ -244,7 +244,7 @@ def get_event_time_adjustment():
 
     print(f"Received event_code: {event_code}, event_date: {event_date}")
 
-    sql = text("""
+    sql = text(f"""
     WITH tmp_time_adjustment AS (
         SELECT 
             e.event_date,
@@ -281,27 +281,8 @@ def get_event_time_adjustment():
         age_ratio_male AS age_adj,
         age_ratio_sex / age_ratio_male AS sex_adj,
         time,
-        (CAST(time_seconds / coeff AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / coeff AS INTEGER) % 60)::text, 2, '0') AS season_adj_time,
-        (CAST(time_seconds / (coeff + coeff_event - 1) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) AS INTEGER) % 60)::text, 2, '0') AS event_adj_time,
-        (CAST(time_seconds / age_ratio_male AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / age_ratio_male AS INTEGER) % 60)::text, 2, '0') AS age_adj_time,
-        (CAST(time_seconds / age_ratio_sex AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / age_ratio_sex AS INTEGER) % 60)::text, 2, '0') AS age_sex_adj_time,
-        (CAST(time_seconds / coeff / age_ratio_male AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / coeff / age_ratio_male AS INTEGER) % 60)::text, 2, '0') AS age_season_adj_time,
-        (CAST(time_seconds / coeff / age_ratio_sex AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / coeff / age_ratio_sex AS INTEGER) % 60)::text, 2, '0') AS age_sex_season_adj_time,
-        (CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_male AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_male AS INTEGER) % 60)::text, 2, '0') AS age_event_adj_time,
-        (CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_sex AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) / age_ratio_sex AS INTEGER) % 60)::text, 2, '0') AS age_sex_event_adj_time,
-        (CAST(time_seconds / (coeff + coeff_event - 1) / (age_ratio_sex / age_ratio_male) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (coeff + coeff_event - 1) / (age_ratio_sex / age_ratio_male) AS INTEGER) % 60)::text, 2, '0') AS sex_event_adj_time,
-        (CAST(time_seconds / (age_ratio_sex / age_ratio_male) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / (age_ratio_sex / age_ratio_male) AS INTEGER) % 60)::text, 2, '0') AS sex_adj_time,
-        time_seconds,
-        time_seconds / coeff AS season_adj_time_seconds,
-        time_seconds / (coeff + coeff_event - 1) AS event_adj_time_seconds,
-        time_seconds / age_ratio_male AS age_adj_time_seconds,
-        time_seconds / age_ratio_sex AS age_sex_adj_time_seconds,
-        time_seconds / coeff / age_ratio_male AS age_season_adj_time_seconds,
-        time_seconds / coeff / age_ratio_sex AS age_sex_season_adj_time_seconds,
-        time_seconds / (coeff + coeff_event - 1) / age_ratio_male AS age_event_adj_time_seconds,
-        time_seconds / (coeff + coeff_event - 1) / age_ratio_sex AS age_sex_event_adj_time_seconds
+        {get_adjustment_fields_sql()}
     FROM tmp_time_adjustment
-    -- WHERE athlete_code = '528017'
     ORDER BY age_event_adj_time
     """)
 
