@@ -903,7 +903,7 @@ def search_athletes():
     pattern_name = f'%{q.lower()}%'
 
     sql = text("""
-        SELECT athlete_code, name
+        SELECT athlete_code, name, club, current_age_estimate
         FROM athletes
         WHERE athlete_code LIKE :pattern_code
            OR LOWER(name) LIKE :pattern_name
