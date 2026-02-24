@@ -884,6 +884,13 @@ def get_athlete_runs():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
+@app.route('/api/athletes', methods=['GET'])
+def get_athletes():
+    sql = text("SELECT athlete_code, name FROM athletes")
+    result = db.session.execute(sql)
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
 
