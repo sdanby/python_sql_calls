@@ -891,6 +891,29 @@ def get_athletes():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
+@app.route('/api/athletes/search', methods=['GET'])
+def search_athletes():
+    q = request.args.get('q', default='', type=str).strip()
+    limit = request.args.get('limit', default=25, type=int)
+    if not q:
+        return jsonify([]), 200
+
+    # Prefer prefix match on athlete_code and substring (case-insensitive) on name
+    pattern_code = f'{q}%'
+    pattern_name = f'%{q.lower()}%'
+
+    sql = text("""
+        SELECT athlete_code, name
+        FROM athletes
+        WHERE athlete_code LIKE :pattern_code
+           OR LOWER(name) LIKE :pattern_name
+        ORDER BY CASE WHEN LOWER(name) LIKE :pattern_name THEN 0 ELSE 1 END, name
+        LIMIT :limit
+    """)
+    result = db.session.execute(sql, {'pattern_code': pattern_code, 'pattern_name': pattern_name, 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
 
