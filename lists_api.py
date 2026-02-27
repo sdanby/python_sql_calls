@@ -35,38 +35,87 @@ def get_fastest_runs_by_athlete():
     """
     from app import db  # Import db here to avoid circular import
     try:
-        # This query finds the row corresponding to the fastest time for each athlete.
-        # This query reads directly from the pre-calculated and indexed materialized view for maximum performance.
-        sql_query = text(f"""
-        SELECT
-            event_code,
-            event_date,
-            athlete_code,
-            position,
-            name,
-            age_group,
-            age_grade,
-            club,
-            comment,
-            time,
-            event_name,
-            coeff,
-            coeff_event,
-            age_ratio_male,
-            age_ratio_sex,
-            {get_adjustment_fields_sql()}
-        FROM athlete_pbs
-        ORDER BY time_seconds ASC
-        LIMIT 1000;
-        """)
-        print(sql_query)
-        result_proxy = db.session.execute(sql_query)
+        # Allowed sort columns (whitelist to prevent SQL injection)
+        allowed_sorts = {
+            'time_seconds',
+            'season_adj_time_seconds',
+            'event_adj_time_seconds',
+            'age_adj_time_seconds',
+            'age_sex_adj_time_seconds',
+            'age_season_adj_time_seconds',
+            'age_sex_season_adj_time_seconds',
+            'age_event_adj_time_seconds',
+            'age_sex_event_adj_time_seconds'
+        }
+
+        # Read query params
+        sort = request.args.get('sort', 'time_seconds')
+        direction = request.args.get('direction', 'asc').lower()
+        try:
+            limit = int(request.args.get('limit', 1000))
+        except (ValueError, TypeError):
+            limit = 1000
+
+        # Validate inputs
+        if sort not in allowed_sorts:
+            return jsonify({
+                'error': 'Invalid sort column',
+                'allowed': sorted(list(allowed_sorts))
+            }), 400
+
+        if direction not in ('asc', 'desc'):
+            direction = 'asc'
+
+        # Cap limit to a reasonable maximum
+        if limit < 1:
+            limit = 1
+        elif limit > 10000:
+            limit = 10000
+
+        # Build and execute the query using the validated column name and direction
+        sql = f"""
+            SELECT
+                event_code,
+                event_date,
+                athlete_code,
+                position,
+                name,
+                age_group,
+                age_grade,
+                club,
+                comment,
+                time,
+                event_name,
+                coeff,
+                coeff_event,
+                age_ratio_male,
+                age_ratio_sex,
+                {get_adjustment_fields_sql()}
+            FROM athlete_pbs
+            ORDER BY {sort} {direction.upper()}
+            LIMIT :limit;
+        """
+
+        sql_query = text(sql)
+        result_proxy = db.session.execute(sql_query, {'limit': limit})
+
+        # Fetch column names from the result proxy
         column_names = result_proxy.keys()
+
+        # Create a list of dictionaries for the JSON response
         results = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
-        db.session.commit()  # <-- Add this line
+
+        # Commit (select-only, but keep parity with remote implementation)
+        db.session.commit()
+
         return jsonify(results)
+
     except Exception as e:
-        db.session.rollback()  # <-- Add this line for safety
+        # Rollback any transactional state and log the error
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         print(f"Database error in get_fastest_runs_by_athlete: {e}")
         return jsonify({"error": "Failed to fetch data from the database"}), 500
 
