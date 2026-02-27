@@ -35,6 +35,9 @@ def get_fastest_runs_by_athlete():
     API endpoint to get the single fastest run for every athlete.
     """
     from app import db  # Import db here to avoid circular import
+    # Ensure `request` is defined even if top-level import was omitted in deployed copy
+    from flask import request
+
     try:
         # Allowed sort columns (whitelist to prevent SQL injection)
         allowed_sorts = {
@@ -113,7 +116,7 @@ def get_fastest_runs_by_athlete():
         return jsonify(results)
 
     except Exception as e:
-        # Rollback any transactional state and log the full traceback for debugging
+         # Rollback any transactional state and log the full traceback for debugging
         try:
             db.session.rollback()
         except Exception:
