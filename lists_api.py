@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify
+import traceback
 from sqlalchemy import text
 
 # 1. Create a new Blueprint
@@ -108,14 +109,21 @@ def get_fastest_runs_by_athlete():
         # Commit (select-only, but keep parity with remote implementation)
         db.session.commit()
 
+
         return jsonify(results)
 
     except Exception as e:
-        # Rollback any transactional state and log the error
+        # Rollback any transactional state and log the full traceback for debugging
         try:
             db.session.rollback()
         except Exception:
             pass
-        print(f"Database error in get_fastest_runs_by_athlete: {e}")
-        return jsonify({"error": "Failed to fetch data from the database"}), 500
+        tb = traceback.format_exc()
+        print(f"Database error in get_fastest_runs_by_athlete: {e}\n{tb}")
+        # Return error details to help debugging (consider removing in production)
+        return jsonify({
+            "error": "Failed to fetch data from the database",
+            "exception": str(e),
+            "traceback": tb
+        }), 500
 
