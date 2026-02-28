@@ -22,10 +22,10 @@ def get_adjustment_fields_sql():
         time_seconds / NULLIF((coeff + coeff_event - 1), 0) AS event_adj_time_seconds,
         time_seconds / NULLIF(age_ratio_male, 0) AS age_adj_time_seconds,
         time_seconds / NULLIF(age_ratio_sex, 0) AS age_sex_adj_time_seconds,
-        time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_male, 0) AS age_season_adj_time_seconds,
-        time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_sex, 0) AS age_sex_season_adj_time_seconds,
-        time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_male, 0) AS age_event_adj_time_seconds,
-        time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_sex, 0) AS age_sex_event_adj_time_seconds
+        time_seconds / NULLIF(coeff + coeff_event -1, 0) / NULLIF(age_ratio_male, 0) AS age_event_adj_time_seconds,
+        time_seconds / NULLIF(coeff + coeff_event -1, 0) / NULLIF(age_ratio_sex, 0) AS age_sex_event_adj_time_seconds,
+        time_seconds / NULLIF((coeff + coeff_event - 1), 0) * (age_ratio_sex / NULLIF(age_ratio_male, 0)) AS sex_event_adj_time_seconds,
+        time_seconds / (age_ratio_sex / NULLIF(age_ratio_male, 0)) AS sex_adj_time_seconds
     """
 
 # 2. Define the new API endpoint for the fastest runs list
