@@ -45,8 +45,10 @@ def get_fastest_runs_by_athlete():
             'season_adj_time_seconds',
             'event_adj_time_seconds',
             'age_adj_time_seconds',
+            'sex_adj_time_seconds',
             'age_sex_adj_time_seconds',
             'age_season_adj_time_seconds',
+            'sex_event_adj_time_seconds',
             'age_sex_season_adj_time_seconds',
             'age_event_adj_time_seconds',
             'age_sex_event_adj_time_seconds'
