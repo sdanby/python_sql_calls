@@ -7,25 +7,25 @@ lists_bp = Blueprint('lists_api', __name__)
 
 def get_adjustment_fields_sql():
     return """
-        (CAST(time_seconds / NULLIF(coeff, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF(coeff, 0) AS INTEGER) % 60)::text, 2, '0') AS season_adj_time,
-        (CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) AS INTEGER) % 60)::text, 2, '0') AS event_adj_time,
-        (CAST(time_seconds / NULLIF(age_ratio_male, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF(age_ratio_male, 0) AS INTEGER) % 60)::text, 2, '0') AS age_adj_time,
-        (CAST(time_seconds / NULLIF(age_ratio_sex, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF(age_ratio_sex, 0) AS INTEGER) % 60)::text, 2, '0') AS age_sex_adj_time,
-        (CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_male, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_male, 0) AS INTEGER) % 60)::text, 2, '0') AS age_season_adj_time,
-        (CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_sex, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_sex, 0) AS INTEGER) % 60)::text, 2, '0') AS age_sex_season_adj_time,
-        (CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_male, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_male, 0) AS INTEGER) % 60)::text, 2, '0') AS age_event_adj_time,
-        (CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_sex, 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_sex, 0) AS INTEGER) % 60)::text, 2, '0') AS age_sex_event_adj_time,
-        (CAST(time_seconds / NULLIF((coeff + coeff_event - 1) * (age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF((coeff + coeff_event - 1) * (age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER) % 60)::text, 2, '0') AS sex_event_adj_time,
-        (CAST(time_seconds / NULLIF((age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER) / 60)::text || ':' || lpad((CAST(time_seconds / NULLIF((age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER) % 60)::text, 2, '0') AS sex_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF(coeff, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF(coeff, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS season_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS event_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF(age_ratio_male, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF(age_ratio_male, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS age_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF(age_ratio_sex, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF(age_ratio_sex, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS age_sex_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_male, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_male, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS age_season_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_sex, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF(coeff, 0) / NULLIF(age_ratio_sex, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS age_sex_season_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_male, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_male, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS age_event_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_sex, 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1), 0) / NULLIF(age_ratio_sex, 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS age_sex_event_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1) * (age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF((coeff + coeff_event - 1) * (age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS sex_event_adj_time,
+        (GREATEST(COALESCE(CAST(time_seconds / NULLIF((age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER), 0), :min_sec) / 60)::text || ':' || lpad((GREATEST(COALESCE(CAST(time_seconds / NULLIF((age_ratio_sex / NULLIF(age_ratio_male, 0)), 0) AS INTEGER), 0), :min_sec) % 60)::text, 2, '0') AS sex_adj_time,
         time_seconds,
-        time_seconds / NULLIF(coeff, 0) AS season_adj_time_seconds,
-        time_seconds / NULLIF((coeff + coeff_event - 1), 0) AS event_adj_time_seconds,
-        time_seconds / NULLIF(age_ratio_male, 0) AS age_adj_time_seconds,
-        time_seconds / NULLIF(age_ratio_sex, 0) AS age_sex_adj_time_seconds,
-        time_seconds / NULLIF(coeff + coeff_event -1, 0) / NULLIF(age_ratio_male, 0) AS age_event_adj_time_seconds,
-        time_seconds / NULLIF(coeff + coeff_event -1, 0) / NULLIF(age_ratio_sex, 0) AS age_sex_event_adj_time_seconds,
-        time_seconds / NULLIF((coeff + coeff_event - 1), 0) * (age_ratio_sex / NULLIF(age_ratio_male, 0)) AS sex_event_adj_time_seconds,
-        time_seconds / (age_ratio_sex / NULLIF(age_ratio_male, 0)) AS sex_adj_time_seconds
+        GREATEST(COALESCE(time_seconds / NULLIF(coeff, 0), 0), :min_sec) AS season_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / NULLIF((coeff + coeff_event - 1), 0), 0), :min_sec) AS event_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / NULLIF(age_ratio_male, 0), 0), :min_sec) AS age_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / NULLIF(age_ratio_sex, 0), 0), :min_sec) AS age_sex_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / NULLIF(coeff + coeff_event -1, 0) / NULLIF(age_ratio_male, 0), 0), :min_sec) AS age_event_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / NULLIF(coeff + coeff_event -1, 0) / NULLIF(age_ratio_sex, 0), 0), :min_sec) AS age_sex_event_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / NULLIF((coeff + coeff_event - 1), 0) * (age_ratio_sex / NULLIF(age_ratio_male, 0)), 0), :min_sec) AS sex_event_adj_time_seconds,
+        GREATEST(COALESCE(time_seconds / (age_ratio_sex / NULLIF(age_ratio_male, 0)), 0), :min_sec) AS sex_adj_time_seconds
     """
 
 # 2. Define the new API endpoint for the fastest runs list
@@ -78,6 +78,12 @@ def get_fastest_runs_by_athlete():
         elif limit > 10000:
             limit = 10000
 
+                # Determine minimum seconds floor (default 12:49 = 769). Can be overridden by query param `min_seconds`.
+        try:
+            min_seconds = int(request.args.get('min_seconds', 12 * 60 + 49))
+        except (TypeError, ValueError):
+            min_seconds = 12 * 60 + 49
+
         # Build and execute the query using the validated column name and direction
         sql = f"""
             SELECT
@@ -103,7 +109,7 @@ def get_fastest_runs_by_athlete():
         """
 
         sql_query = text(sql)
-        result_proxy = db.session.execute(sql_query, {'limit': limit})
+        result_proxy = db.session.execute(sql_query, {'limit': limit, 'min_sec': min_seconds})
 
         # Fetch column names from the result proxy
         column_names = result_proxy.keys()
