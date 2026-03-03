@@ -285,12 +285,16 @@ def get_event_time_adjustment():
     FROM tmp_time_adjustment
     ORDER BY age_event_adj_time
     """)
-	
+
+	# accept either min_sec or min_seconds query param; default 12:49 -> 769 seconds
+	min_param = request.args.get('min_sec')
+	if min_param is None:
+	    min_param = request.args.get('min_seconds')
 	try:
-		min_seconds = int(request.args.get('min_seconds', 12 * 60 + 49))
+	    min_seconds = int(min_param) if min_param is not None else 12 * 60 + 49
 	except (TypeError, ValueError):
-		min_seconds = 12 * 60 + 49
-		
+	    min_seconds = 12 * 60 + 49
+	
 	params = {'event_code': event_code, 'event_date': event_date, 'min_sec': min_seconds}
     result = db.session.execute(sql, params)
 
