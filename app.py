@@ -290,8 +290,8 @@ def get_event_time_adjustment():
 		min_seconds = int(request.args.get('min_seconds', 12 * 60 + 49))
 	except (TypeError, ValueError):
 		min_seconds = 12 * 60 + 49
-
-    params = {'event_code': event_code, 'event_date': event_date, 'min_sec': min_seconds}
+		
+	params = {'event_code': event_code, 'event_date': event_date, 'min_sec': min_seconds}
     result = db.session.execute(sql, params)
 
     rows = [dict(r) for r in result.fetchall()]
