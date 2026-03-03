@@ -285,8 +285,13 @@ def get_event_time_adjustment():
     FROM tmp_time_adjustment
     ORDER BY age_event_adj_time
     """)
+	
+	try:
+		min_seconds = int(request.args.get('min_seconds', 12 * 60 + 49))
+	except (TypeError, ValueError):
+		min_seconds = 12 * 60 + 49
 
-    params = {'event_code': event_code, 'event_date': event_date}
+    params = {'event_code': event_code, 'event_date': event_date, 'min_sec': min_seconds}
     result = db.session.execute(sql, params)
 
     rows = [dict(r) for r in result.fetchall()]
