@@ -37,23 +37,18 @@ def get_fastest_runs_by_athlete():
     API endpoint to get the single fastest run for every athlete.
     """
     from app import db  # Import db here to avoid circular import
-    # Ensure `request` is defined even if top-level import was omitted in deployed copy
-    from flask import request
-
     try:
-        # Allowed sort columns (whitelist to prevent SQL injection)
-        allowed_sorts = {
-            'time_seconds',
-            'season_adj_time_seconds',
-            'event_adj_time_seconds',
-            'age_adj_time_seconds',
-            'sex_adj_time_seconds',
-            'age_sex_adj_time_seconds',
-            'age_season_adj_time_seconds',
-            'sex_event_adj_time_seconds',
-            'age_sex_season_adj_time_seconds',
-            'age_event_adj_time_seconds',
-            'age_sex_event_adj_time_seconds'
+        # Sort whitelist mapped to pre-built materialized views.
+        sort_to_view = {
+            'time_seconds': 'mv_best_time',
+            'season_adj_time_seconds': 'mv_best_season',
+            'event_adj_time_seconds': 'mv_best_event',
+            'age_adj_time_seconds': 'mv_best_age',
+            'sex_adj_time_seconds': 'mv_best_sex',
+            'age_sex_adj_time_seconds': 'mv_best_age_sex',
+            'age_event_adj_time_seconds': 'mv_best_age_event',
+            'sex_event_adj_time_seconds': 'mv_best_sex_event',
+            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event'
         }
 
         # Read query params
@@ -65,10 +60,10 @@ def get_fastest_runs_by_athlete():
             limit = 1000
 
         # Validate inputs
-        if sort not in allowed_sorts:
+        if sort not in sort_to_view:
             return jsonify({
                 'error': 'Invalid sort column',
-                'allowed': sorted(list(allowed_sorts))
+                'allowed': sorted(list(sort_to_view.keys()))
             }), 400
 
         if direction not in ('asc', 'desc'):
@@ -80,38 +75,18 @@ def get_fastest_runs_by_athlete():
         elif limit > 10000:
             limit = 10000
 
-                # Determine minimum seconds floor (default 12:49 = 769). Can be overridden by query param `min_seconds`.
-        try:
-            min_seconds = int(request.args.get('min_seconds', 12 * 60 + 49))
-        except (TypeError, ValueError):
-            min_seconds = 12 * 60 + 49
+        selected_view = sort_to_view[sort]
 
-        # Build and execute the query using the validated column name and direction
+        # Build and execute query from the selected materialized view.
         sql = f"""
-            SELECT
-                event_code,
-                event_date,
-                athlete_code,
-                position,
-                name,
-                age_group,
-                age_grade,
-                club,
-                comment,
-                time,
-                event_name,
-                coeff,
-                coeff_event,
-                age_ratio_male,
-                age_ratio_sex,
-                {get_adjustment_fields_sql()}
-            FROM athlete_pbs
-            ORDER BY {sort} {direction.upper()}
+            SELECT *
+            FROM {selected_view}
+            ORDER BY {sort} {direction.upper()}, athlete_code
             LIMIT :limit;
         """
 
         sql_query = text(sql)
-        result_proxy = db.session.execute(sql_query, {'limit': limit, 'min_sec': min_seconds})
+        result_proxy = db.session.execute(sql_query, {'limit': limit})
 
         # Fetch column names from the result proxy
         column_names = result_proxy.keys()
@@ -122,11 +97,10 @@ def get_fastest_runs_by_athlete():
         # Commit (select-only, but keep parity with remote implementation)
         db.session.commit()
 
-
         return jsonify(results)
 
     except Exception as e:
-         # Rollback any transactional state and log the full traceback for debugging
+        # Rollback any transactional state and log the full traceback for debugging
         try:
             db.session.rollback()
         except Exception:
