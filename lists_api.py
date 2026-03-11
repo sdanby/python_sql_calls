@@ -37,6 +37,7 @@ def get_fastest_runs_by_athlete():
     API endpoint to get the single fastest run for every athlete.
     """
     from app import db  # Import db here to avoid circular import
+    from flask import request
     try:
         # Sort whitelist mapped to pre-built materialized views.
         sort_to_view = {
