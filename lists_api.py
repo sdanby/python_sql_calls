@@ -40,7 +40,7 @@ def get_fastest_runs_by_athlete():
     from flask import request
     try:
         # Sort whitelist mapped to pre-built materialized views.
-        sort_to_view = {
+        sort_to_view_all_time = {
             'time_seconds': 'mv_best_time',
             'season_adj_time_seconds': 'mv_best_season',
             'event_adj_time_seconds': 'mv_best_event',
@@ -49,11 +49,37 @@ def get_fastest_runs_by_athlete():
             'age_sex_adj_time_seconds': 'mv_best_age_sex',
             'age_event_adj_time_seconds': 'mv_best_age_event',
             'sex_event_adj_time_seconds': 'mv_best_sex_event',
-            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event'
+            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event',
+        }
+        
+        sort_to_view_last_year = {
+            'time_seconds': 'mv_best_time_last_year',
+            'season_adj_time_seconds': 'mv_best_season_last_year',
+            'event_adj_time_seconds': 'mv_best_event_last_year',
+            'age_adj_time_seconds': 'mv_best_age_last_year',
+            'sex_adj_time_seconds': 'mv_best_sex_last_year',
+            'age_sex_adj_time_seconds': 'mv_best_age_sex_last_year',
+            'age_event_adj_time_seconds': 'mv_best_age_event_last_year',
+            'sex_event_adj_time_seconds': 'mv_best_sex_event_last_year',
+            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event_last_year',
         }
 
-        # Read query params
+        period = request.args.get('period', 'all_time').lower()
+        if period not in ('all_time', 'last_year'):
+            return jsonify({
+                'error': 'Invalid period',
+                'allowed': ['all_time', 'last_year']
+            }), 400
+        
+        sort_to_view = sort_to_view_last_year if period == 'last_year' else sort_to_view_all_time
+        
         sort = request.args.get('sort', 'time_seconds')
+        if sort not in sort_to_view:
+            return jsonify({
+                'error': 'Invalid sort column',
+                'allowed': sorted(list(sort_to_view.keys()))
+            }), 400
+            
         direction = request.args.get('direction', 'asc').lower()
         try:
             limit = int(request.args.get('limit', 1000))
