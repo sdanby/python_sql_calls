@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
 from lists_api import lists_bp, get_adjustment_fields_sql 
+import traceback
 import re
 #from consistency import get_parkrun_data
 
