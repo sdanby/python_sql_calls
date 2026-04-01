@@ -923,10 +923,7 @@ def search_athletes():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
-@app.route('/api/lists/athlete_best_summary', methods=['GET'])
+@app.route('/api/athlete_best_summary', methods=['GET'])
 def get_athlete_best_summary():
         """
         API endpoint to get best-run ranks (all-time and last-year) plus total/recent runs
@@ -1069,7 +1066,8 @@ def get_athlete_best_summary():
                         "traceback": tb
                 }), 500
 
-
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
 
 
