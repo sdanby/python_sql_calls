@@ -944,7 +944,7 @@ def get_athlete_best_summary():
                 sql = text("""
                         WITH
                         params AS (
-                            SELECT :athlete_code::text AS athlete_code
+                            SELECT CAST(:athlete_code AS text) AS athlete_code
                         ),
                         event_ranked AS (
                             SELECT athlete_code, event_date, event_adj_time AS time,
