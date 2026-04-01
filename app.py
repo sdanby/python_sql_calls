@@ -926,6 +926,149 @@ def search_athletes():
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
 
+@app.route('/api/lists/athlete_best_summary', methods=['GET'])
+def get_athlete_best_summary():
+        """
+        API endpoint to get best-run ranks (all-time and last-year) plus total/recent runs
+        for a single athlete.
+        Query param:
+            - athlete_code (required)
+        """
+        from app import db  # Import db here to avoid circular import
+        try:
+                athlete_code = (request.args.get('athlete_code') or '').strip()
+                if not athlete_code:
+                        return jsonify({
+                                'error': 'Missing required parameter',
+                                'required': ['athlete_code']
+                        }), 400
+
+                sql = text("""
+                        WITH
+                        params AS (
+                            SELECT :athlete_code::text AS athlete_code
+                        ),
+                        event_ranked AS (
+                            SELECT athlete_code, event_date, event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_event
+                        ),
+                        age_event_ranked AS (
+                            SELECT athlete_code, event_date, age_event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY age_event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_age_event
+                        ),
+                        sex_event_ranked AS (
+                            SELECT athlete_code, event_date, sex_event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY sex_event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_sex_event
+                        ),
+                        age_sex_event_ranked AS (
+                            SELECT athlete_code, event_date, age_sex_event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY age_sex_event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_age_sex_event
+                        ),
+                        event_1y_ranked AS (
+                            SELECT athlete_code, event_date, event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_event_last_year
+                        ),
+                        age_event_1y_ranked AS (
+                            SELECT athlete_code, event_date, age_event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY age_event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_age_event_last_year
+                        ),
+                        sex_event_1y_ranked AS (
+                            SELECT athlete_code, event_date, sex_event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY sex_event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_sex_event_last_year
+                        ),
+                        age_sex_event_1y_ranked AS (
+                            SELECT athlete_code, event_date, age_sex_event_adj_time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY age_sex_event_adj_time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_age_sex_event_last_year
+                        ),
+                        total_runs_ranked AS (
+                            SELECT
+                                a.athlete_code::text AS athlete_code,
+                                COALESCE(a.total_runs, 0) AS total_runs,
+                                COALESCE(a.recent_runs, 0) AS recent_runs
+                            FROM athletes a
+                        ),
+                        stacked AS (
+                            SELECT e.athlete_code::text, 'event_all_time'::text AS best_type, e.event_date::text, e.rank, e.time::text
+                            FROM event_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'age_event_all_time'::text, e.event_date::text, e.rank, e.time::text
+                            FROM age_event_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'sex_event_all_time'::text, e.event_date::text, e.rank, e.time::text
+                            FROM sex_event_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'age_sex_event_all_time'::text, e.event_date::text, e.rank, e.time::text
+                            FROM age_sex_event_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'event_1y'::text, e.event_date::text, e.rank, e.time::text
+                            FROM event_1y_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'age_event_1y'::text, e.event_date::text, e.rank, e.time::text
+                            FROM age_event_1y_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'sex_event_1y'::text, e.event_date::text, e.rank, e.time::text
+                            FROM sex_event_1y_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'age_sex_event_1y'::text, e.event_date::text, e.rank, e.time::text
+                            FROM age_sex_event_1y_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+
+                            UNION ALL
+                            SELECT tr.athlete_code, 'total_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.total_runs::text AS time
+                            FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
+
+                            UNION ALL
+                            SELECT tr.athlete_code, 'recent_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.recent_runs::text AS time
+                            FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
+                        ),
+                        picked AS (
+                            SELECT *,
+                                         ROW_NUMBER() OVER (
+                                             PARTITION BY athlete_code, best_type
+                                             ORDER BY rank DESC NULLS LAST, event_date DESC NULLS LAST
+                                         ) AS rn
+                            FROM stacked
+                        )
+                        SELECT athlete_code, best_type, event_date, rank, time
+                        FROM picked
+                        WHERE rn = 1
+                        ORDER BY best_type;
+                """)
+
+                result_proxy = db.session.execute(sql, {'athlete_code': athlete_code})
+                column_names = result_proxy.keys()
+                results = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
+
+                db.session.commit()
+                return jsonify(results)
+
+        except Exception as e:
+                try:
+                        db.session.rollback()
+                except Exception:
+                        pass
+                tb = traceback.format_exc()
+                print(f"Database error in get_athlete_best_summary: {e}\n{tb}")
+                return jsonify({
+                        "error": "Failed to fetch data from the database",
+                        "exception": str(e),
+                        "traceback": tb
+                }), 500
+
 
 
 
