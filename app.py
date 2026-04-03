@@ -944,7 +944,12 @@ def get_athlete_best_summary():
                 sql = text("""
                         WITH
                         params AS (
-                            SELECT CAST(:athlete_code AS text) AS athlete_code
+                            SELECT CAST('528017' AS text) AS athlete_code
+                        ),
+						best_ranked AS (
+                            SELECT athlete_code, event_date, time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_time
                         ),
                         event_ranked AS (
                             SELECT athlete_code, event_date, event_adj_time AS time,
@@ -965,6 +970,11 @@ def get_athlete_best_summary():
                             SELECT athlete_code, event_date, age_sex_event_adj_time AS time,
                                 (101 - NTILE(101) OVER (ORDER BY age_sex_event_adj_time_seconds ASC, athlete_code)) AS rank
                             FROM mv_best_age_sex_event
+                        ),
+                        best_1y_ranked AS (
+                            SELECT athlete_code, event_date, time AS time,
+                                (101 - NTILE(101) OVER (ORDER BY time_seconds ASC, athlete_code)) AS rank
+                            FROM mv_best_time_last_year
                         ),
                         event_1y_ranked AS (
                             SELECT athlete_code, event_date, event_adj_time AS time,
@@ -994,7 +1004,11 @@ def get_athlete_best_summary():
                             FROM athletes a
                         ),
                         stacked AS (
-                            SELECT e.athlete_code::text, 'event_all_time'::text AS best_type, e.event_date::text, e.rank, e.time::text
+                            SELECT e.athlete_code::text, 'best_all_time'::text AS best_type, e.event_date::text, e.rank, e.time::text
+                            FROM best_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+							UNION ALL
+						
+                            SELECT e.athlete_code::text, 'event_all_time'::text, e.event_date::text, e.rank, e.time::text
                             FROM event_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
 
                             UNION ALL
@@ -1009,6 +1023,10 @@ def get_athlete_best_summary():
                             SELECT e.athlete_code::text, 'age_sex_event_all_time'::text, e.event_date::text, e.rank, e.time::text
                             FROM age_sex_event_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
 
+                            UNION ALL
+                            SELECT e.athlete_code::text, 'best_1y'::text, e.event_date::text, e.rank, e.time::text
+                            FROM best_1y_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
+							
                             UNION ALL
                             SELECT e.athlete_code::text, 'event_1y'::text, e.event_date::text, e.rank, e.time::text
                             FROM event_1y_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
