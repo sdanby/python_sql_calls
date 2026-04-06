@@ -76,8 +76,8 @@ class EventPosition(db.Model):
     distinct_courses_long= db.Column(db.Integer)
 	last_event_code_count_long= db.Column(db.Integer)
     total_runs_long= db.Column(db.Integer)
-	regular=db.Column(db.String)
-	returner=db.Column(db.String)
+    regular=db.Column(db.String)
+    returner=db.Column(db.String)
     super_returner=db.Column(db.String)
     best_curve_ranking_current= db.Column(db.Integer)
     best_curve_ranking_historic= db.Column(db.Integer)
@@ -214,7 +214,7 @@ def get_event_positions():
         'returner': r.get('returner'),
         'super_returner': r.get('super_returner'),
         # new field from athletes table:
-        'total_runs': r.get('total_runs'),
+		'total_runs': r.get('total_runs'),
 		'best_curve_ranking_current': r.get('best_curve_ranking_current'),
 		'best_curve_ranking_historic': r.get('best_curve_ranking_historic'),
 		'best_curve_ranking_current_type': r.get('best_curve_ranking_current_type')
