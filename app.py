@@ -79,6 +79,9 @@ class EventPosition(db.Model):
     regular=db.Column(db.String)
     returner=db.Column(db.String)
     super_returner=db.Column(db.String)
+	best_curve_ranking_current= db.Column(db.Integer)
+	best_curve_ranking_historic= db.Column(db.Integer)
+	best_curve_ranking_current_type= db.Column(db.String)
 
 class ParkrunEvent(db.Model):
     __tablename__ = 'parkrun_events'
@@ -211,7 +214,10 @@ def get_event_positions():
         'returner': r.get('returner'),
         'super_returner': r.get('super_returner'),
         # new field from athletes table:
-        'total_runs': r.get('total_runs')
+        'total_runs': r.get('total_runs'),
+		'best_curve_ranking_current': r.get('best_curve_ranking_current'),
+		'best_curve_ranking_historic': r.get('best_curve_ranking_historic'),
+		'best_curve_ranking_current_type': r.get('best_curve_ranking_current_type')
     } for r in rows])
 
 @app.route('/api/eventpositions', methods=['DELETE'])
