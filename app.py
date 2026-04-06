@@ -78,10 +78,12 @@ class EventPosition(db.Model):
     total_runs_long= db.Column(db.Integer)
     regular=db.Column(db.String)
     returner=db.Column(db.String)
-    super_returner=db.Column(db.String)
+	super_returner=db.Column(db.String)
 	best_curve_ranking_current= db.Column(db.Integer)
 	best_curve_ranking_historic= db.Column(db.Integer)
 	best_curve_ranking_current_type= db.Column(db.String)
+
+
 
 class ParkrunEvent(db.Model):
     __tablename__ = 'parkrun_events'
