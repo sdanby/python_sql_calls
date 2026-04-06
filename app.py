@@ -74,16 +74,14 @@ class EventPosition(db.Model):
     adj2_time_seconds= db.Column(db.Float)
     adj2_time_ratio= db.Column(db.Float)
     distinct_courses_long= db.Column(db.Integer)
-    last_event_code_count_long= db.Column(db.Integer)
+	last_event_code_count_long= db.Column(db.Integer)
     total_runs_long= db.Column(db.Integer)
-    regular=db.Column(db.String)
-    returner=db.Column(db.String)
-	super_returner=db.Column(db.String)
-	best_curve_ranking_current= db.Column(db.Integer)
-	best_curve_ranking_historic= db.Column(db.Integer)
-	best_curve_ranking_current_type= db.Column(db.String)
-
-
+	regular=db.Column(db.String)
+	returner=db.Column(db.String)
+    super_returner=db.Column(db.String)
+    best_curve_ranking_current= db.Column(db.Integer)
+    best_curve_ranking_historic= db.Column(db.Integer)
+    best_curve_ranking_current_type= db.Column(db.String)
 
 class ParkrunEvent(db.Model):
     __tablename__ = 'parkrun_events'
