@@ -41,27 +41,27 @@ def get_fastest_runs_by_athlete():
     try:
         # Sort whitelist mapped to pre-built materialized views.
         sort_to_view_all_time = {
-            'time_seconds': 'mv_best_time',
-            'season_adj_time_seconds': 'mv_best_season',
-            'event_adj_time_seconds': 'mv_best_event',
-            'age_adj_time_seconds': 'mv_best_age',
-            'sex_adj_time_seconds': 'mv_best_sex',
-            'age_sex_adj_time_seconds': 'mv_best_age_sex',
-            'age_event_adj_time_seconds': 'mv_best_age_event',
-            'sex_event_adj_time_seconds': 'mv_best_sex_event',
-            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event',
+            'time_seconds': 'mv_best_curve',
+            'season_adj_time_seconds': 'mv_best_season_curve',
+            'event_adj_time_seconds': 'mv_best_event_curve',
+            'age_adj_time_seconds': 'mv_best_age_curve',
+            'sex_adj_time_seconds': 'mv_best_sex_curve',
+            'age_sex_adj_time_seconds': 'mv_best_age_sex_curve',
+            'age_event_adj_time_seconds': 'mv_best_age_event_curve',
+            'sex_event_adj_time_seconds': 'mv_best_sex_event_curve',
+            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event_curve',
         }
         
         sort_to_view_last_year = {
-            'time_seconds': 'mv_best_time_last_year',
-            'season_adj_time_seconds': 'mv_best_season_last_year',
-            'event_adj_time_seconds': 'mv_best_event_last_year',
-            'age_adj_time_seconds': 'mv_best_age_last_year',
-            'sex_adj_time_seconds': 'mv_best_sex_last_year',
-            'age_sex_adj_time_seconds': 'mv_best_age_sex_last_year',
-            'age_event_adj_time_seconds': 'mv_best_age_event_last_year',
-            'sex_event_adj_time_seconds': 'mv_best_sex_event_last_year',
-            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event_last_year',
+            'time_seconds': 'mv_best_1y_curve',
+            'season_adj_time_seconds': 'mv_best_season_1y_curve',
+            'event_adj_time_seconds': 'mv_best_event_1y_curve',
+            'age_adj_time_seconds': 'mv_best_age_1y_curve',
+            'sex_adj_time_seconds': 'mv_best_sex_1y_curve',
+            'age_sex_adj_time_seconds': 'mv_best_age_sex_1y_curve',
+            'age_event_adj_time_seconds': 'mv_best_age_event_1y_curve',
+            'sex_event_adj_time_seconds': 'mv_best_sex_event_1y_curve',
+            'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event_1y_curve',
         }
 
         period = request.args.get('period', 'all_time').lower()
