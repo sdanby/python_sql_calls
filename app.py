@@ -8,6 +8,10 @@ from sqlalchemy import text # Import text from SQLAlchemy
 from lists_api import lists_bp, get_adjustment_fields_sql 
 import traceback
 import re
+import os
+import uuid
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 #from consistency import get_parkrun_data
 
 app = Flask(__name__)
@@ -139,6 +143,43 @@ class ParkrunEvent(db.Model):
 #@app.route('/get_parkrun_data', methods=['GET']) 
 #def get_parkrun_data_route(): 
 #    return get_parkrun_data()
+
+@app.route('/api/auth/config', methods=['GET'])
+def auth_config():
+    return jsonify({
+        'googleClientId': os.getenv('GOOGLE_CLIENT_ID', '')
+    }), 200
+
+
+@app.route('/api/auth/google', methods=['POST'])
+def auth_google():
+    payload = request.get_json(silent=True) or {}
+    credential = payload.get('credential') or payload.get('idToken')
+    if not credential:
+        return jsonify({'error': 'Google credential is required'}), 400
+
+    client_id = os.getenv('GOOGLE_CLIENT_ID')
+    if not client_id:
+        return jsonify({'error': 'GOOGLE_CLIENT_ID is not configured on backend'}), 500
+
+    try:
+        claims = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            client_id
+        )
+    except Exception as exc:
+        return jsonify({'error': f'Invalid Google token: {exc}'}), 401
+
+    session_token = f"{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    return jsonify({
+        'token': session_token,
+        'user': {
+            'id': claims.get('sub'),
+            'email': claims.get('email'),
+            'displayName': claims.get('name')
+        }
+    }), 200
 
 @app.route('/delete_duplicates', methods=['POST']) 
 def delete_duplicates(): 
