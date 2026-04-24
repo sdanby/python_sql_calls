@@ -5,3 +5,4 @@ SQLAlchemy==1.4.39
 psycopg2-binary==2.9.2
 Werkzeug==2.2.3  # Update this line to match Flask's requirements
 google-auth==2.39.0
+requests==2.32.3
