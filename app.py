@@ -181,6 +181,40 @@ def auth_google():
         }
     }), 200
 
+@app.route('/api/analytics/page-visit', methods=['POST', 'OPTIONS'])
+def track_page_visit():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    payload = request.get_json(silent=True) or {}
+    token = payload.get('token')
+    path = (payload.get('path') or '').strip()
+    if not path:
+        return jsonify({'error': 'path is required'}), 400
+
+    duration_ms = payload.get('durationMs')
+    try:
+        duration_ms = int(duration_ms) if duration_ms is not None else None
+    except Exception:
+        duration_ms = None
+
+    db.session.execute(text("""
+        INSERT INTO page_usage_events
+            (session_token, page_path, entered_at, left_at, duration_ms, referrer_path, user_agent, created_at)
+        VALUES
+            (:session_token, :page_path, :entered_at, :left_at, :duration_ms, :referrer_path, :user_agent, NOW())
+    """), {
+        'session_token': token,
+        'page_path': path[:512],
+        'entered_at': payload.get('enteredAt'),
+        'left_at': payload.get('leftAt'),
+        'duration_ms': duration_ms,
+        'referrer_path': (payload.get('referrer') or '')[:512] or None,
+        'user_agent': request.headers.get('User-Agent'),
+    })
+    db.session.commit()
+    return jsonify({'ok': True}), 200
+
 @app.route('/delete_duplicates', methods=['POST']) 
 def delete_duplicates(): 
     try: 
