@@ -31,6 +31,27 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
+
+def _normalize_athlete_code(value):
+    normalized = str(value or '').strip()
+    return normalized or None
+
+
+def _resolve_athlete_code(value):
+    athlete_code = _normalize_athlete_code(value)
+    if not athlete_code:
+        return None
+    row = db.session.execute(
+        text("""
+            SELECT CAST(athlete_code AS TEXT) AS athlete_code
+            FROM athletes
+            WHERE CAST(athlete_code AS TEXT) = :athlete_code
+            LIMIT 1
+        """),
+        {'athlete_code': athlete_code}
+    ).fetchone()
+    return athlete_code if row else None
+
 # Add this block to automatically close sessions
 @app.teardown_appcontext
 def shutdown_session(exception=None):
@@ -155,6 +176,7 @@ def auth_config():
 def auth_google():
     payload = request.get_json(silent=True) or {}
     credential = payload.get('credential') or payload.get('idToken')
+    athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
     if not credential:
         return jsonify({'error': 'Google credential is required'}), 400
 
@@ -177,7 +199,8 @@ def auth_google():
         'user': {
             'id': claims.get('sub'),
             'email': claims.get('email'),
-            'displayName': claims.get('name')
+            'displayName': claims.get('name'),
+            'athleteCode': athlete_code
         }
     }), 200
 
