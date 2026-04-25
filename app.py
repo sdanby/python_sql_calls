@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
 from lists_api import lists_bp, get_adjustment_fields_sql 
+from database import connections
 import traceback
 import re
 import os
