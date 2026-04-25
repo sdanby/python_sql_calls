@@ -2,9 +2,10 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS  # Make sure to import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Date
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
+from sqlalchemy import inspect
 from lists_api import lists_bp, get_adjustment_fields_sql 
 import traceback
 import re
@@ -12,6 +13,7 @@ import os
 import uuid
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from werkzeug.security import generate_password_hash, check_password_hash
 #from consistency import get_parkrun_data
 
 app = Flask(__name__)
@@ -161,6 +163,135 @@ class ParkrunEvent(db.Model):
             'super_returner_count' : self.super_returner_count
         }
 
+
+class AuthUser(db.Model):
+    __tablename__ = 'auth_users'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=True)
+    google_sub = db.Column(db.String(255), unique=True, nullable=True, index=True)
+    display_name = db.Column(db.String(255), nullable=True)
+    athlete_code = db.Column(db.String(32), nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = db.Column(db.DateTime, nullable=True)
+
+
+class AuthSession(db.Model):
+    __tablename__ = 'auth_sessions'
+    token = db.Column(db.String(96), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('auth_users.id'), nullable=False, index=True)
+    provider = db.Column(db.String(32), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    revoked = db.Column(db.Boolean, default=False, nullable=False)
+
+
+class AuthLoginEvent(db.Model):
+    __tablename__ = 'auth_login_events'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, nullable=True, index=True)
+    provider = db.Column(db.String(32), nullable=False)
+    success = db.Column(db.Boolean, nullable=False)
+    ip_address = db.Column(db.String(64), nullable=True)
+    user_agent = db.Column(db.String(512), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PageUsageEvent(db.Model):
+    __tablename__ = 'page_usage_events'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, nullable=True, index=True)
+    session_token = db.Column(db.String(96), nullable=True, index=True)
+    page_path = db.Column(db.String(512), nullable=False)
+    entered_at = db.Column(db.DateTime, nullable=True)
+    left_at = db.Column(db.DateTime, nullable=True)
+    duration_ms = db.Column(db.Integer, nullable=True)
+    referrer_path = db.Column(db.String(512), nullable=True)
+    user_agent = db.Column(db.String(512), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+with app.app_context():
+    AuthUser.__table__.create(bind=db.engine, checkfirst=True)
+    AuthSession.__table__.create(bind=db.engine, checkfirst=True)
+    AuthLoginEvent.__table__.create(bind=db.engine, checkfirst=True)
+    PageUsageEvent.__table__.create(bind=db.engine, checkfirst=True)
+    inspector = inspect(db.engine)
+    auth_user_columns = {column['name'] for column in inspector.get_columns('auth_users')}
+    if 'athlete_code' not in auth_user_columns:
+        db.session.execute(text("ALTER TABLE auth_users ADD COLUMN athlete_code VARCHAR(32)"))
+        db.session.commit()
+
+
+def _normalize_email(value):
+    return (value or '').strip().lower()
+
+
+def _session_token():
+    return f"{uuid.uuid4().hex}{uuid.uuid4().hex}"
+
+
+def _extract_bearer_token():
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.lower().startswith('bearer '):
+        return auth_header.split(' ', 1)[1].strip()
+    return None
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith('Z'):
+        raw = raw[:-1] + '+00:00'
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _resolve_session(session_token):
+    if not session_token:
+        return None, None
+    sess = AuthSession.query.filter_by(token=session_token, revoked=False).first()
+    if not sess:
+        return None, None
+    user = AuthUser.query.filter_by(id=sess.user_id).first()
+    if not user:
+        return None, None
+    sess.last_seen_at = datetime.utcnow()
+    db.session.commit()
+    return sess, user
+
+
+def _user_payload(user):
+    return {
+        'id': user.id,
+        'email': user.email,
+        'displayName': user.display_name,
+        'athleteCode': user.athlete_code,
+        'lastLoginAt': user.last_login_at.isoformat() if user.last_login_at else None,
+    }
+
+
+def _record_login_event(user_id, provider, success):
+    evt = AuthLoginEvent(
+        user_id=user_id,
+        provider=provider,
+        success=success,
+        ip_address=request.headers.get('X-Forwarded-For', request.remote_addr),
+        user_agent=request.headers.get('User-Agent')
+    )
+    db.session.add(evt)
+    db.session.commit()
+
 #@app.route('/get_parkrun_data', methods=['GET']) 
 #def get_parkrun_data_route(): 
 #    return get_parkrun_data()
@@ -168,8 +299,68 @@ class ParkrunEvent(db.Model):
 @app.route('/api/auth/config', methods=['GET'])
 def auth_config():
     return jsonify({
-        'googleClientId': os.getenv('GOOGLE_CLIENT_ID', '')
+        'googleClientId': os.getenv('GOOGLE_CLIENT_ID') or ''
     }), 200
+
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    payload = request.get_json(silent=True) or {}
+    email = _normalize_email(payload.get('email'))
+    password = str(payload.get('password') or '')
+    display_name = (payload.get('displayName') or '').strip() or None
+    athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
+
+    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return jsonify({'error': 'Valid email is required.'}), 400
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters.'}), 400
+
+    existing = AuthUser.query.filter_by(email=email).first()
+    if existing:
+        return jsonify({'error': 'Email already registered.'}), 409
+
+    user = AuthUser(
+        email=email,
+        password_hash=generate_password_hash(password),
+        display_name=display_name,
+        athlete_code=athlete_code,
+        last_login_at=datetime.utcnow(),
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    token = _session_token()
+    db.session.add(AuthSession(token=token, user_id=user.id, provider='email'))
+    db.session.commit()
+    _record_login_event(user.id, 'email', True)
+
+    return jsonify({'token': token, 'user': _user_payload(user)}), 200
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    payload = request.get_json(silent=True) or {}
+    email = _normalize_email(payload.get('email'))
+    password = str(payload.get('password') or '')
+
+    user = AuthUser.query.filter_by(email=email).first()
+    if not user or not user.password_hash or not check_password_hash(user.password_hash, password):
+        _record_login_event(user.id if user else None, 'email', False)
+        return jsonify({'error': 'Invalid email or password.'}), 401
+
+    previous_last_login_at = user.last_login_at
+    token = _session_token()
+    if 'athleteCode' in payload:
+        user.athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
+    user.last_login_at = datetime.utcnow()
+    db.session.add(AuthSession(token=token, user_id=user.id, provider='email'))
+    db.session.commit()
+    _record_login_event(user.id, 'email', True)
+
+    payload_user = _user_payload(user)
+    payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
+    return jsonify({'token': token, 'user': payload_user}), 200
 
 
 @app.route('/api/auth/google', methods=['POST'])
@@ -193,16 +384,91 @@ def auth_google():
     except Exception as exc:
         return jsonify({'error': f'Invalid Google token: {exc}'}), 401
 
-    session_token = f"{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    google_sub = claims.get('sub')
+    email = _normalize_email(claims.get('email'))
+    display_name = claims.get('name')
+    if not google_sub or not email:
+        return jsonify({'error': 'Google token missing required claims.'}), 400
+
+    user = AuthUser.query.filter_by(google_sub=google_sub).first()
+    if not user:
+        user = AuthUser.query.filter_by(email=email).first()
+
+    previous_last_login_at = user.last_login_at if user else None
+
+    if not user:
+        user = AuthUser(email=email, google_sub=google_sub, display_name=display_name, athlete_code=athlete_code)
+        db.session.add(user)
+    else:
+        if not user.google_sub:
+            user.google_sub = google_sub
+        if display_name and not user.display_name:
+            user.display_name = display_name
+        if 'athleteCode' in payload:
+            user.athlete_code = athlete_code
+
+    user.last_login_at = datetime.utcnow()
+    db.session.commit()
+
+    session_token = _session_token()
+    db.session.add(AuthSession(token=session_token, user_id=user.id, provider='google'))
+    db.session.commit()
+    _record_login_event(user.id, 'google', True)
+
+    payload_user = _user_payload(user)
+    payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
     return jsonify({
         'token': session_token,
-        'user': {
-            'id': claims.get('sub'),
-            'email': claims.get('email'),
-            'displayName': claims.get('name'),
-            'athleteCode': athlete_code
-        }
+        'user': payload_user
     }), 200
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    payload = request.get_json(silent=True) or {}
+    session_token = payload.get('token') or _extract_bearer_token()
+    if not session_token:
+        return jsonify({'ok': True}), 200
+    sess = AuthSession.query.filter_by(token=session_token, revoked=False).first()
+    if sess:
+        sess.revoked = True
+        db.session.commit()
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/auth/me', methods=['GET'])
+def auth_me():
+    session_token = _extract_bearer_token()
+    _sess, user = _resolve_session(session_token)
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify({'user': _user_payload(user)}), 200
+
+
+@app.route('/api/auth/link-athlete', methods=['POST'])
+def auth_link_athlete():
+    payload = request.get_json(silent=True) or {}
+    session_token = payload.get('token') or _extract_bearer_token()
+    _sess, user = _resolve_session(session_token)
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    requested_athlete_code = _normalize_athlete_code(payload.get('athleteCode'))
+    resolved_athlete_code = _resolve_athlete_code(requested_athlete_code)
+
+    if requested_athlete_code and not resolved_athlete_code:
+        user.athlete_code = None
+        db.session.commit()
+        return jsonify({
+            'ok': True,
+            'user': _user_payload(user),
+            'message': 'athleteCode not found in athletes; stored as NULL.'
+        }), 200
+
+    user.athlete_code = resolved_athlete_code
+    db.session.commit()
+    return jsonify({'ok': True, 'user': _user_payload(user)}), 200
+
 
 @app.route('/api/analytics/page-visit', methods=['POST', 'OPTIONS'])
 def track_page_visit():
