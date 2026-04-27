@@ -169,26 +169,7 @@ def get_event_summary_by_code():
                 elif limit > 1000:
                         limit = 1000
 
-                has_last_any_mv = bool(db.session.execute(
-                    text("SELECT to_regclass('public.mv_athlete_last_any_run') IS NOT NULL")
-                ).scalar())
-
-                latest_any_event_sql = """
-                            SELECT
-                                athlete_code,
-                                last_any_run_date
-                            FROM mv_athlete_last_any_run
-                        """ if has_last_any_mv else """
-                            SELECT
-                                athlete_code,
-                                MAX(event_dt) AS last_any_run_date
-                            FROM mv_extend_runs
-                            WHERE athlete_code IS NOT NULL
-                                AND event_dt IS NOT NULL
-                            GROUP BY athlete_code
-                        """
-
-                sql = text(f"""
+                sql = text("""
                         WITH base AS (
                             SELECT
                                 athlete_code,
@@ -231,7 +212,10 @@ def get_event_summary_by_code():
                             ORDER BY athlete_code, event_dt DESC
                         ),
                         latest_any_event AS (
-{latest_any_event_sql}
+                            SELECT
+                                athlete_code,
+                                last_any_run_date
+                            FROM mv_athlete_last_any_run
                         ),
                         vol_base AS (
                             SELECT
