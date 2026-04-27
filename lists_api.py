@@ -211,6 +211,15 @@ def get_event_summary_by_code():
                             FROM base
                             ORDER BY athlete_code, event_dt DESC
                         ),
+                        latest_any_event AS (
+                            SELECT
+                                athlete_code,
+                                MAX(event_dt) AS last_any_run_date
+                            FROM mv_extend_runs
+                            WHERE athlete_code IS NOT NULL
+                                AND event_dt IS NOT NULL
+                            GROUP BY athlete_code
+                        ),
                         vol_base AS (
                             SELECT
                                 v.athlete_code,
@@ -242,7 +251,10 @@ def get_event_summary_by_code():
                             a.appearances,
                             COALESCE(v.volunteer_count, 0) AS volunteer_count,
                             (a.appearances + COALESCE(v.volunteer_count, 0)) AS total_count,
-                            l.best_curve_ranking_current,
+                            CASE
+                                WHEN la.last_any_run_date < (current_date - INTERVAL '1 year') THEN NULL
+                                ELSE l.best_curve_ranking_current
+                            END AS best_curve_ranking_current,
                             l.best_curve_ranking_historic,
                             l.best_curve_ranking_current_type,
                             to_char(l.last_run_date, 'DD/MM/YYYY') AS last_run_date,
@@ -254,6 +266,7 @@ def get_event_summary_by_code():
                             END AS days_since_last_volunteered
                         FROM agg a
                         JOIN latest l USING (athlete_code)
+                        LEFT JOIN latest_any_event la USING (athlete_code)
                         LEFT JOIN vol_counts v USING (athlete_code)
                         ORDER BY total_count DESC, a.appearances DESC, volunteer_count DESC
                         LIMIT :limit;
