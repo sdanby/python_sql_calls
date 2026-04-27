@@ -170,102 +170,27 @@ def get_event_summary_by_code():
                         limit = 1000
 
                 sql = text("""
-                        WITH base AS (
-                            SELECT
-                                athlete_code,
-                                name,
-                                club,
-                                time_seconds,
-                                event_adj_time_seconds,
-                                age_ratio_male,
-                                age_ratio_sex,
-                                best_curve_ranking_current,
-                                best_curve_ranking_historic,
-                                best_curve_ranking_current_type,
-                                event_dt
-                            FROM mv_extend_runs
-                            WHERE event_code = :event_code
-                                AND athlete_code IS NOT NULL
-                                AND event_dt IS NOT NULL
-                        ),
-                        agg AS (
-                            SELECT
-                                athlete_code,
-                                MIN(time_seconds) AS min_time_seconds,
-                                MIN(event_adj_time_seconds) AS min_event_adj_time_seconds,
-                                MIN(event_adj_time_seconds / NULLIF(age_ratio_male, 0)) AS min_age_event_adj_time_seconds,
-                                MIN(event_adj_time_seconds / NULLIF(age_ratio_sex, 0)) AS min_age_sex_event_adj_time_seconds,
-                                COUNT(*) AS appearances
-                            FROM base
-                            GROUP BY athlete_code
-                        ),
-                        latest AS (
-                            SELECT DISTINCT ON (athlete_code)
-                                athlete_code,
-                                name,
-                                club,
-                                best_curve_ranking_current,
-                                best_curve_ranking_historic,
-                                best_curve_ranking_current_type,
-                                event_dt AS last_run_date
-                            FROM base
-                            ORDER BY athlete_code, event_dt DESC
-                        ),
-                        latest_any_event AS (
-                            SELECT
-                                athlete_code,
-                                last_any_run_date
-                            FROM mv_athlete_last_any_run
-                        ),
-                        vol_base AS (
-                            SELECT
-                                v.athlete_code,
-                                CASE
-                                    WHEN v.event_date ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_date(v.event_date, 'DD/MM/YYYY')
-                                    WHEN v.event_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN to_date(v.event_date, 'YYYY-MM-DD')
-                                    ELSE NULL
-                                END AS vol_dt
-                            FROM volunteers v
-                            WHERE v.event_code = :event_code
-                                AND v.athlete_code IS NOT NULL
-                        ),
-                        vol_counts AS (
-                            SELECT
-                                athlete_code,
-                                COUNT(*) AS volunteer_count,
-                                MAX(vol_dt) AS last_volunteer_date
-                            FROM vol_base
-                            GROUP BY athlete_code
-                        )
                         SELECT
-                            a.athlete_code,
-                            l.name,
-                            l.club,
-                            to_char((a.min_time_seconds::int || ' seconds')::interval, 'FMMI:SS') AS min_time_mmss,
-                            to_char((round(a.min_event_adj_time_seconds)::int || ' seconds')::interval, 'FMMI:SS') AS min_event_adj_mmss,
-                            to_char((round(a.min_age_event_adj_time_seconds)::int || ' seconds')::interval, 'FMMI:SS') AS min_age_event_adj_mmss,
-                            to_char((round(a.min_age_sex_event_adj_time_seconds)::int || ' seconds')::interval, 'FMMI:SS') AS min_age_sex_event_adj_mmss,
-                            a.appearances,
-                            COALESCE(v.volunteer_count, 0) AS volunteer_count,
-                            (a.appearances + COALESCE(v.volunteer_count, 0)) AS total_count,
-                            CASE
-                                WHEN la.last_any_run_date < (current_date - INTERVAL '1 year') THEN NULL
-                                ELSE l.best_curve_ranking_current
-                            END AS best_curve_ranking_current,
-                            l.best_curve_ranking_historic,
-                            l.best_curve_ranking_current_type,
-                            to_char(l.last_run_date, 'DD/MM/YYYY') AS last_run_date,
-                            (current_date - l.last_run_date) AS days_since_last_run,
-                            to_char(v.last_volunteer_date, 'DD/MM/YYYY') AS last_volunteer_date,
-                            CASE
-                                WHEN v.last_volunteer_date IS NULL THEN NULL
-                                ELSE (current_date - v.last_volunteer_date)
-                            END AS days_since_last_volunteered
-                        FROM agg a
-                        JOIN latest l USING (athlete_code)
-                        LEFT JOIN latest_any_event la USING (athlete_code)
-                        LEFT JOIN vol_counts v USING (athlete_code)
-                        ORDER BY total_count DESC, a.appearances DESC, volunteer_count DESC
+                            athlete_code,
+                            name,
+                            club,
+                            min_time_mmss,
+                            min_event_adj_mmss,
+                            min_age_event_adj_mmss,
+                            min_age_sex_event_adj_mmss,
+                            appearances,
+                            volunteer_count,
+                            total_count,
+                            best_curve_ranking_current,
+                            best_curve_ranking_historic,
+                            best_curve_ranking_current_type,
+                            last_run_date_ddmmyyyy AS last_run_date,
+                            days_since_last_run,
+                            last_volunteer_date_ddmmyyyy AS last_volunteer_date,
+                            days_since_last_volunteered
+                        FROM mv_event_summary_cache
+                        WHERE event_code = :event_code
+                        ORDER BY total_count DESC, appearances DESC, volunteer_count DESC, athlete_code
                         LIMIT :limit;
                     """)
 
