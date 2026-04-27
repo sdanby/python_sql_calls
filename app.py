@@ -1290,6 +1290,28 @@ def search_athletes():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
+@app.route('/api/clubs/search', methods=['GET'])
+def search_clubs():
+    q = request.args.get('q', default='', type=str).strip().lower()
+    limit = request.args.get('limit', default=25, type=int)
+    limit = max(1, min(limit, 200))
+
+    sql = text("""
+        SELECT
+            club,
+            COUNT(*)::int AS athlete_count
+        FROM athletes
+        WHERE club IS NOT NULL
+          AND btrim(club) <> ''
+          AND (:q = '' OR LOWER(club) LIKE :pattern)
+        GROUP BY club
+        ORDER BY club
+        LIMIT :limit
+    """)
+    result = db.session.execute(sql, {'q': q, 'pattern': f'%{q}%', 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
 @app.route('/api/athlete_best_summary', methods=['GET'])
 def get_athlete_best_summary():
         """
