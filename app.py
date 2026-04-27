@@ -1312,6 +1312,47 @@ def search_clubs():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
+
+@app.route('/api/clubs/members', methods=['GET'])
+def get_club_members():
+    club = (request.args.get('club') or '').strip()
+    limit = request.args.get('limit', default=1000, type=int)
+    limit = max(1, min(limit, 5000))
+
+    if not club:
+        return jsonify({'error': 'Missing required parameter: club'}), 400
+
+    sql = text("""
+        SELECT
+            athlete_code,
+            name,
+            current_club,
+            club_runs_total,
+            club_runs_last_year,
+            first_club_run_date,
+            last_club_run_date,
+            fastest_time,
+            fastest_time_seconds,
+            best_event_adj_time,
+            best_event_adj_time_seconds,
+            best_age_event_adj_time,
+            best_age_event_adj_time_seconds,
+            best_age_sex_event_adj_time,
+            best_age_sex_event_adj_time_seconds,
+            best_curve_ranking_current,
+            best_curve_ranking_historic,
+            best_curve_ranking_current_type,
+            total_runs_all_clubs
+        FROM mv_club_members_cache
+        WHERE club_key = regexp_replace(LOWER(BTRIM(:club)), '\\s+ac$', '')
+        ORDER BY club_runs_total DESC, name
+        LIMIT :limit
+    """)
+
+    result = db.session.execute(sql, {'club': club, 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
 @app.route('/api/athlete_best_summary', methods=['GET'])
 def get_athlete_best_summary():
         """
