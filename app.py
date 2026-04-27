@@ -1326,6 +1326,7 @@ def get_club_members():
         SELECT
             athlete_code,
             name,
+            club_key,
             current_club,
             club_runs_total,
             club_runs_last_year,
@@ -1344,7 +1345,7 @@ def get_club_members():
             best_curve_ranking_current_type,
             total_runs_all_clubs
         FROM mv_club_members_cache
-        WHERE club_key = regexp_replace(LOWER(BTRIM(:club)), '\\s+ac$', '')
+        WHERE club_key = BTRIM(:club)
         ORDER BY club_runs_total DESC, name
         LIMIT :limit
     """)
