@@ -563,6 +563,97 @@ def admin_user_set_admin(user_id):
     }), 200
 
 
+@app.route('/api/admin/activity', methods=['GET'])
+def admin_activity_list():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    limit = request.args.get('limit', default=300, type=int)
+    limit = max(20, min(limit, 1000))
+
+    sql = text("""
+        WITH page_events AS (
+            SELECT
+                'page_visit'::text AS activity_type,
+                p.created_at AS activity_at,
+                au.id AS user_id,
+                au.email AS email,
+                au.display_name AS display_name,
+                NULL::text AS provider,
+                NULL::boolean AS success,
+                p.page_path AS page_path,
+                p.duration_ms AS duration_ms,
+                p.referrer_path AS referrer_path,
+                p.user_agent AS user_agent,
+                NULL::text AS ip_address
+            FROM page_usage_events p
+            LEFT JOIN auth_sessions s ON s.token = p.session_token
+            LEFT JOIN auth_users au ON au.id = s.user_id
+        ),
+        login_events AS (
+            SELECT
+                'login'::text AS activity_type,
+                l.created_at AS activity_at,
+                au.id AS user_id,
+                au.email AS email,
+                au.display_name AS display_name,
+                l.provider AS provider,
+                l.success AS success,
+                NULL::text AS page_path,
+                NULL::integer AS duration_ms,
+                NULL::text AS referrer_path,
+                l.user_agent AS user_agent,
+                l.ip_address AS ip_address
+            FROM auth_login_events l
+            LEFT JOIN auth_users au ON au.id = l.user_id
+        ),
+        combined AS (
+            SELECT * FROM page_events
+            UNION ALL
+            SELECT * FROM login_events
+        )
+        SELECT
+            activity_type,
+            activity_at,
+            user_id,
+            email,
+            display_name,
+            provider,
+            success,
+            page_path,
+            duration_ms,
+            referrer_path,
+            user_agent,
+            ip_address
+        FROM combined
+        ORDER BY activity_at DESC NULLS LAST
+        LIMIT :limit
+    """)
+
+    rows = db.session.execute(sql, {'limit': limit}).mappings().all()
+    payload = []
+    for row in rows:
+        payload.append({
+            'activityType': row.get('activity_type'),
+            'activityAt': _format_db_datetime(row.get('activity_at')),
+            'userId': row.get('user_id'),
+            'email': row.get('email'),
+            'displayName': row.get('display_name'),
+            'provider': row.get('provider'),
+            'success': row.get('success'),
+            'pagePath': row.get('page_path'),
+            'durationMs': row.get('duration_ms'),
+            'referrerPath': row.get('referrer_path'),
+            'userAgent': row.get('user_agent'),
+            'ipAddress': row.get('ip_address')
+        })
+
+    return jsonify({'activity': payload, 'limit': limit}), 200
+
+
 @app.route('/api/auth/link-athlete', methods=['POST'])
 def auth_link_athlete():
     payload = request.get_json(silent=True) or {}
