@@ -172,6 +172,7 @@ class AuthUser(db.Model):
     google_sub = db.Column(db.String(255), unique=True, nullable=True, index=True)
     display_name = db.Column(db.String(255), nullable=True)
     athlete_code = db.Column(db.String(32), nullable=True, index=True)
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime, nullable=True)
 
@@ -220,6 +221,9 @@ with app.app_context():
     auth_user_columns = {column['name'] for column in inspector.get_columns('auth_users')}
     if 'athlete_code' not in auth_user_columns:
         db.session.execute(text("ALTER TABLE auth_users ADD COLUMN athlete_code VARCHAR(32)"))
+        db.session.commit()
+    if 'is_admin' not in auth_user_columns:
+        db.session.execute(text("ALTER TABLE auth_users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         db.session.commit()
 
 
@@ -277,6 +281,7 @@ def _user_payload(user):
         'email': user.email,
         'displayName': user.display_name,
         'athleteCode': user.athlete_code,
+        'isAdmin': bool(user.is_admin),
         'lastLoginAt': user.last_login_at.isoformat() if user.last_login_at else None,
     }
 
@@ -291,6 +296,34 @@ def _record_login_event(user_id, provider, success):
     )
     db.session.add(evt)
     db.session.commit()
+
+
+def _admin_count():
+    return int(AuthUser.query.filter_by(is_admin=True).count())
+
+
+def _is_admin_bootstrap_open():
+    return _admin_count() == 0
+
+
+def _can_access_admin(user):
+    if not user:
+        return False
+    return bool(user.is_admin) or _is_admin_bootstrap_open()
+
+
+def _require_authenticated_user():
+    session_token = _extract_bearer_token()
+    _sess, user = _resolve_session(session_token)
+    return _sess, user
+
+
+def _format_db_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 #@app.route('/get_parkrun_data', methods=['GET']) 
 #def get_parkrun_data_route(): 
@@ -443,6 +476,91 @@ def auth_me():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify({'user': _user_payload(user)}), 200
+
+
+@app.route('/api/admin/status', methods=['GET'])
+def admin_status():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    admin_count = _admin_count()
+    bootstrap_open = admin_count == 0
+    can_access_admin = bool(user.is_admin) or bootstrap_open
+
+    return jsonify({
+        'adminCount': admin_count,
+        'bootstrapOpen': bootstrap_open,
+        'canAccessAdmin': can_access_admin,
+        'user': _user_payload(user)
+    }), 200
+
+
+@app.route('/api/admin/users', methods=['GET'])
+def admin_users_list():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    rows = AuthUser.query.order_by(AuthUser.created_at.desc()).all()
+    payload = []
+    for row in rows:
+        payload.append({
+            'id': row.id,
+            'email': row.email,
+            'displayName': row.display_name,
+            'athleteCode': row.athlete_code,
+            'isAdmin': bool(row.is_admin),
+            'createdAt': _format_db_datetime(row.created_at),
+            'lastLoginAt': _format_db_datetime(row.last_login_at)
+        })
+
+    return jsonify({
+        'users': payload,
+        'adminCount': _admin_count(),
+        'bootstrapOpen': _is_admin_bootstrap_open()
+    }), 200
+
+
+@app.route('/api/admin/users/<int:user_id>/admin', methods=['POST'])
+def admin_user_set_admin(user_id):
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    is_admin = bool(payload.get('isAdmin', False))
+
+    target = AuthUser.query.filter_by(id=user_id).first()
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    if not is_admin and bool(target.is_admin):
+        admin_count_before = _admin_count()
+        if admin_count_before <= 1:
+            return jsonify({'error': 'At least one admin is required.'}), 400
+
+    target.is_admin = is_admin
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'user': {
+            'id': target.id,
+            'email': target.email,
+            'displayName': target.display_name,
+            'athleteCode': target.athlete_code,
+            'isAdmin': bool(target.is_admin),
+            'createdAt': _format_db_datetime(target.created_at),
+            'lastLoginAt': _format_db_datetime(target.last_login_at)
+        },
+        'adminCount': _admin_count(),
+        'bootstrapOpen': _is_admin_bootstrap_open()
+    }), 200
 
 
 @app.route('/api/auth/link-athlete', methods=['POST'])
