@@ -172,6 +172,8 @@ class AuthUser(db.Model):
     google_sub = db.Column(db.String(255), unique=True, nullable=True, index=True)
     display_name = db.Column(db.String(255), nullable=True)
     athlete_code = db.Column(db.String(32), nullable=True, index=True)
+    default_course_code = db.Column(db.String(32), nullable=True, index=True)
+    default_course_name = db.Column(db.String(255), nullable=True)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime, nullable=True)
@@ -236,6 +238,12 @@ with app.app_context():
     if 'is_admin' not in auth_user_columns:
         db.session.execute(text("ALTER TABLE auth_users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         db.session.commit()
+    if 'default_course_code' not in auth_user_columns:
+        db.session.execute(text("ALTER TABLE auth_users ADD COLUMN default_course_code VARCHAR(32)"))
+        db.session.commit()
+    if 'default_course_name' not in auth_user_columns:
+        db.session.execute(text("ALTER TABLE auth_users ADD COLUMN default_course_name VARCHAR(255)"))
+        db.session.commit()
 
 
 def _normalize_email(value):
@@ -244,6 +252,43 @@ def _normalize_email(value):
 
 def _session_token():
     return f"{uuid.uuid4().hex}{uuid.uuid4().hex}"
+
+
+def _resolve_default_course(event_code_value, event_name_value):
+    code = str(event_code_value or '').strip()
+    name = str(event_name_value or '').strip()
+
+    if code:
+        row = db.session.execute(
+            text("""
+                SELECT CAST(event_code AS TEXT) AS event_code,
+                       COALESCE(NULLIF(display_name, ''), event_name) AS event_name
+                FROM events
+                WHERE CAST(event_code AS TEXT) = :event_code
+                LIMIT 1
+            """),
+            {'event_code': code}
+        ).mappings().first()
+        if row:
+            return str(row.get('event_code')), str(row.get('event_name') or '')
+        return None, None
+
+    if name:
+        row = db.session.execute(
+            text("""
+                SELECT CAST(event_code AS TEXT) AS event_code,
+                       COALESCE(NULLIF(display_name, ''), event_name) AS event_name
+                FROM events
+                WHERE LOWER(COALESCE(NULLIF(display_name, ''), event_name)) = LOWER(:event_name)
+                LIMIT 1
+            """),
+            {'event_name': name}
+        ).mappings().first()
+        if row:
+            return str(row.get('event_code')), str(row.get('event_name') or '')
+        return None, None
+
+    return None, None
 
 
 def _extract_bearer_token():
@@ -292,6 +337,8 @@ def _user_payload(user):
         'email': user.email,
         'displayName': user.display_name,
         'athleteCode': user.athlete_code,
+        'defaultCourseCode': user.default_course_code,
+        'defaultCourseName': user.default_course_name,
         'isAdmin': bool(user.is_admin),
         'lastLoginAt': user.last_login_at.isoformat() if user.last_login_at else None,
     }
@@ -397,6 +444,25 @@ def auth_config():
     }), 200
 
 
+@app.route('/api/events/options', methods=['GET'])
+def get_event_options():
+    rows = db.session.execute(text("""
+        SELECT CAST(event_code AS TEXT) AS event_code,
+               COALESCE(NULLIF(display_name, ''), event_name) AS event_name
+        FROM events
+        ORDER BY COALESCE(NULLIF(display_name, ''), event_name)
+    """)).mappings().all()
+    payload = [
+        {
+            'eventCode': str(row.get('event_code') or ''),
+            'eventName': str(row.get('event_name') or '')
+        }
+        for row in rows
+        if row.get('event_code') is not None and row.get('event_name') is not None
+    ]
+    return jsonify(payload), 200
+
+
 @app.route('/api/auth/register', methods=['POST'])
 def auth_register():
     payload = request.get_json(silent=True) or {}
@@ -404,6 +470,10 @@ def auth_register():
     password = str(payload.get('password') or '')
     display_name = (payload.get('displayName') or '').strip() or None
     athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
+    default_course_code, default_course_name = _resolve_default_course(
+        payload.get('defaultCourseCode'),
+        payload.get('defaultCourseName')
+    )
 
     if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
         return jsonify({'error': 'Valid email is required.'}), 400
@@ -419,6 +489,8 @@ def auth_register():
         password_hash=generate_password_hash(password),
         display_name=display_name,
         athlete_code=athlete_code,
+        default_course_code=default_course_code,
+        default_course_name=default_course_name,
         last_login_at=datetime.utcnow(),
     )
     db.session.add(user)
@@ -447,6 +519,10 @@ def auth_login():
     token = _session_token()
     if 'athleteCode' in payload:
         user.athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
+    if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
+        dc_code, dc_name = _resolve_default_course(payload.get('defaultCourseCode'), payload.get('defaultCourseName'))
+        user.default_course_code = dc_code
+        user.default_course_name = dc_name
     user.last_login_at = datetime.utcnow()
     db.session.add(AuthSession(token=token, user_id=user.id, provider='email'))
     db.session.commit()
@@ -462,6 +538,10 @@ def auth_google():
     payload = request.get_json(silent=True) or {}
     credential = payload.get('credential') or payload.get('idToken')
     athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
+    default_course_code, default_course_name = _resolve_default_course(
+        payload.get('defaultCourseCode'),
+        payload.get('defaultCourseName')
+    )
     if not credential:
         return jsonify({'error': 'Google credential is required'}), 400
 
@@ -491,7 +571,14 @@ def auth_google():
     previous_last_login_at = user.last_login_at if user else None
 
     if not user:
-        user = AuthUser(email=email, google_sub=google_sub, display_name=display_name, athlete_code=athlete_code)
+        user = AuthUser(
+            email=email,
+            google_sub=google_sub,
+            display_name=display_name,
+            athlete_code=athlete_code,
+            default_course_code=default_course_code,
+            default_course_name=default_course_name
+        )
         db.session.add(user)
     else:
         if not user.google_sub:
@@ -500,6 +587,9 @@ def auth_google():
             user.display_name = display_name
         if 'athleteCode' in payload:
             user.athlete_code = athlete_code
+        if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
+            user.default_course_code = default_course_code
+            user.default_course_name = default_course_name
 
     user.last_login_at = datetime.utcnow()
     db.session.commit()
@@ -725,6 +815,12 @@ def auth_link_athlete():
 
     requested_athlete_code = _normalize_athlete_code(payload.get('athleteCode'))
     resolved_athlete_code = _resolve_athlete_code(requested_athlete_code)
+    requested_default_course_code = payload.get('defaultCourseCode')
+    requested_default_course_name = payload.get('defaultCourseName')
+    resolved_default_course_code, resolved_default_course_name = _resolve_default_course(
+        requested_default_course_code,
+        requested_default_course_name
+    )
 
     if requested_athlete_code and not resolved_athlete_code:
         user.athlete_code = None
@@ -736,6 +832,9 @@ def auth_link_athlete():
         }), 200
 
     user.athlete_code = resolved_athlete_code
+    if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
+        user.default_course_code = resolved_default_course_code
+        user.default_course_name = resolved_default_course_name
     db.session.commit()
     return jsonify({'ok': True, 'user': _user_payload(user)}), 200
 
