@@ -663,6 +663,8 @@ def admin_users_list():
             'email': row.email,
             'displayName': row.display_name,
             'athleteCode': row.athlete_code,
+            'defaultCourseCode': row.default_course_code,
+            'defaultCourseName': row.default_course_name,
             'isAdmin': bool(row.is_admin),
             'createdAt': _format_db_datetime(row.created_at),
             'lastLoginAt': _format_db_datetime(row.last_login_at)
@@ -705,12 +707,50 @@ def admin_user_set_admin(user_id):
             'email': target.email,
             'displayName': target.display_name,
             'athleteCode': target.athlete_code,
+            'defaultCourseCode': target.default_course_code,
+            'defaultCourseName': target.default_course_name,
             'isAdmin': bool(target.is_admin),
             'createdAt': _format_db_datetime(target.created_at),
             'lastLoginAt': _format_db_datetime(target.last_login_at)
         },
         'adminCount': _admin_count(),
         'bootstrapOpen': _is_admin_bootstrap_open()
+    }), 200
+
+
+@app.route('/api/admin/users/<int:user_id>/default-course', methods=['POST'])
+def admin_user_set_default_course(user_id):
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    target = AuthUser.query.filter_by(id=user_id).first()
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    dc_code, dc_name = _resolve_default_course(payload.get('defaultCourseCode'), payload.get('defaultCourseName'))
+    if not dc_code and not dc_name:
+        return jsonify({'error': 'Course not found. Please check the course code or name.'}), 400
+    target.default_course_code = dc_code
+    target.default_course_name = dc_name
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'user': {
+            'id': target.id,
+            'email': target.email,
+            'displayName': target.display_name,
+            'athleteCode': target.athlete_code,
+            'defaultCourseCode': target.default_course_code,
+            'defaultCourseName': target.default_course_name,
+            'isAdmin': bool(target.is_admin),
+            'createdAt': _format_db_datetime(target.created_at),
+            'lastLoginAt': _format_db_datetime(target.last_login_at)
+        }
     }), 200
 
 
