@@ -212,11 +212,22 @@ class PageUsageEvent(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
+class FeedbackRequest(db.Model):
+    __tablename__ = 'feedback_requests'
+    id = db.Column(db.Integer, primary_key=True)
+    request_type = db.Column(db.String(32), nullable=False)
+    title = db.Column(db.String(255), nullable=False)
+    details = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default='Logged')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
 with app.app_context():
     AuthUser.__table__.create(bind=db.engine, checkfirst=True)
     AuthSession.__table__.create(bind=db.engine, checkfirst=True)
     AuthLoginEvent.__table__.create(bind=db.engine, checkfirst=True)
     PageUsageEvent.__table__.create(bind=db.engine, checkfirst=True)
+    FeedbackRequest.__table__.create(bind=db.engine, checkfirst=True)
     inspector = inspect(db.engine)
     auth_user_columns = {column['name'] for column in inspector.get_columns('auth_users')}
     if 'athlete_code' not in auth_user_columns:
@@ -316,6 +327,56 @@ def _require_authenticated_user():
     session_token = _extract_bearer_token()
     _sess, user = _resolve_session(session_token)
     return _sess, user
+
+
+@app.route('/api/feedback-requests', methods=['GET'])
+def get_feedback_requests():
+    rows = FeedbackRequest.query.order_by(FeedbackRequest.id.asc()).all()
+    payload = []
+    for row in rows:
+        payload.append({
+            'id': row.id,
+            'type': 'error' if str(row.request_type).lower() == 'error' else 'suggestion',
+            'title': row.title,
+            'details': row.details,
+            'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
+            'status': row.status or 'Logged'
+        })
+    return jsonify(payload), 200
+
+
+@app.route('/api/feedback-requests', methods=['POST'])
+def create_feedback_request():
+    payload = request.get_json(silent=True) or {}
+    request_type_raw = str(payload.get('type') or '').strip().lower()
+    title = str(payload.get('title') or '').strip()
+    details = str(payload.get('details') or '').strip()
+
+    if request_type_raw not in ('error', 'suggestion'):
+        return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
+    if not title:
+        return jsonify({'error': 'title is required'}), 400
+    if not details:
+        return jsonify({'error': 'details are required'}), 400
+
+    row = FeedbackRequest(
+        request_type=request_type_raw,
+        title=title,
+        details=details,
+        status='Logged',
+        created_at=datetime.utcnow()
+    )
+    db.session.add(row)
+    db.session.commit()
+
+    return jsonify({
+        'id': row.id,
+        'type': request_type_raw,
+        'title': row.title,
+        'details': row.details,
+        'dateLogged': row.created_at.strftime('%Y-%m-%d'),
+        'status': row.status
+    }), 201
 
 
 def _format_db_datetime(value):
