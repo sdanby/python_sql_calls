@@ -1017,6 +1017,108 @@ def delete_event_positions():
         db.session.rollback()  # Rollback in case of error
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/api/eventpositions/monthly-cascade', methods=['GET'])
+def get_event_positions_monthly_cascade():
+    event_code = request.args.get('event_code', default=None, type=int)
+
+    if event_code is None:
+        return jsonify({"error": "event_code is required"}), 400
+
+    sql = text("""
+    WITH base AS (
+        SELECT
+            ep.event_code,
+            ep.event_date,
+            COALESCE(ep.total_runs, a.total_runs, 0) AS total_runs,
+            COALESCE(ep.comment, '') AS comment,
+            COALESCE(CAST(ep.super_tourist AS TEXT), '') AS super_tourist,
+            COALESCE(ep.tourist_flag, '') AS tourist_flag,
+            COALESCE(ep.returner, '') AS returner,
+            COALESCE(ep.super_returner, '') AS super_returner,
+            COALESCE(ep.regular, '') AS regular,
+            COALESCE(ep.last_event_code_count_long, 0) AS last_event_code_count_long,
+            to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt
+        FROM eventpositions ep
+        LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
+        LEFT JOIN parkrun_events pe ON pe.event_code = ep.event_code AND pe.event_date = ep.event_date
+        WHERE ep.event_code = :event_code
+          AND (pe.event_number IS NULL OR pe.event_number <= 10000)
+    ),
+    classified AS (
+        SELECT
+            event_date,
+            EXTRACT(MONTH FROM event_dt)::int AS month_idx,
+            CASE
+                WHEN total_runs = 1 THEN 'g1_first_first_timer'
+                WHEN comment = 'First Timer!' THEN 'g2_first_timer_comment'
+                WHEN super_tourist IN ('1', 'T', 'True', 'true') THEN 'g3_super_tourist'
+                WHEN tourist_flag = 'T' THEN 'g4_tourist'
+                WHEN returner = 'T' OR super_returner = 'T' THEN 'g5_returner_or_super_returner'
+                WHEN regular = 'T' THEN 'g6_super_regular'
+                WHEN last_event_code_count_long > 10 THEN 'g7_last_event_code_count_long_gt10'
+                ELSE 'g8_rest'
+            END AS grp
+        FROM base
+        WHERE event_dt IS NOT NULL
+    ),
+    per_event AS (
+        SELECT
+            event_date,
+            month_idx,
+            SUM(CASE WHEN grp = 'g1_first_first_timer' THEN 1 ELSE 0 END) AS g1,
+            SUM(CASE WHEN grp = 'g2_first_timer_comment' THEN 1 ELSE 0 END) AS g2,
+            SUM(CASE WHEN grp = 'g3_super_tourist' THEN 1 ELSE 0 END) AS g3,
+            SUM(CASE WHEN grp = 'g4_tourist' THEN 1 ELSE 0 END) AS g4,
+            SUM(CASE WHEN grp = 'g5_returner_or_super_returner' THEN 1 ELSE 0 END) AS g5,
+            SUM(CASE WHEN grp = 'g6_super_regular' THEN 1 ELSE 0 END) AS g6,
+            SUM(CASE WHEN grp = 'g7_last_event_code_count_long_gt10' THEN 1 ELSE 0 END) AS g7,
+            SUM(CASE WHEN grp = 'g8_rest' THEN 1 ELSE 0 END) AS g8
+        FROM classified
+        GROUP BY event_date, month_idx
+    ),
+    per_month AS (
+        SELECT
+            month_idx,
+            COUNT(*)::int AS events_in_month,
+            AVG(g1)::float AS g1_avg,
+            AVG(g2)::float AS g2_avg,
+            AVG(g3)::float AS g3_avg,
+            AVG(g4)::float AS g4_avg,
+            AVG(g5)::float AS g5_avg,
+            AVG(g6)::float AS g6_avg,
+            AVG(g7)::float AS g7_avg,
+            AVG(g8)::float AS g8_avg
+        FROM per_event
+        GROUP BY month_idx
+    ),
+    months AS (
+        SELECT generate_series(1, 12) AS month_idx
+    )
+    SELECT
+        m.month_idx,
+        to_char(make_date(2000, m.month_idx, 1), 'Mon') AS month_label,
+        COALESCE(pm.events_in_month, 0) AS events_in_month,
+        COALESCE(pm.g1_avg, 0) AS first_first_timer_avg,
+        COALESCE(pm.g2_avg, 0) AS first_timer_comment_avg,
+        COALESCE(pm.g3_avg, 0) AS super_tourist_avg,
+        COALESCE(pm.g4_avg, 0) AS tourist_avg,
+        COALESCE(pm.g5_avg, 0) AS returner_or_super_returner_avg,
+        COALESCE(pm.g6_avg, 0) AS super_regular_avg,
+        COALESCE(pm.g7_avg, 0) AS last_event_code_count_long_gt10_avg,
+        COALESCE(pm.g8_avg, 0) AS rest_avg
+    FROM months m
+    LEFT JOIN per_month pm ON pm.month_idx = m.month_idx
+    ORDER BY m.month_idx;
+    """)
+
+    try:
+        result = db.session.execute(sql, {'event_code': event_code})
+        rows = [dict(r) for r in result.fetchall()]
+        return jsonify(rows), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/eventTimeAdjustment', methods=['GET'])
 def get_event_time_adjustment():
     event_code = request.args.get('event_code', default=None, type=int)
