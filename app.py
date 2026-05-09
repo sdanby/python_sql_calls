@@ -1038,6 +1038,7 @@ def get_event_positions_monthly_cascade():
             COALESCE(ep.super_returner, '') AS super_returner,
             COALESCE(ep.regular, '') AS regular,
             COALESCE(ep.last_event_code_count_long, 0) AS last_event_code_count_long,
+            COALESCE(pe.last_position, 0) AS last_position,
             to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt
         FROM eventpositions ep
         LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
@@ -1049,6 +1050,7 @@ def get_event_positions_monthly_cascade():
         SELECT
             event_date,
             EXTRACT(MONTH FROM event_dt)::int AS month_idx,
+            last_position,
             CASE
                 WHEN total_runs = 1 THEN 'g1_first_first_timer'
                 WHEN comment = 'First Timer!' THEN 'g2_first_timer_comment'
@@ -1066,6 +1068,7 @@ def get_event_positions_monthly_cascade():
         SELECT
             event_date,
             month_idx,
+            GREATEST(MAX(last_position) - COUNT(*), 0)::float AS unknown_count,
             SUM(CASE WHEN grp = 'g1_first_first_timer' THEN 1 ELSE 0 END) AS g1,
             SUM(CASE WHEN grp = 'g2_first_timer_comment' THEN 1 ELSE 0 END) AS g2,
             SUM(CASE WHEN grp = 'g3_super_tourist' THEN 1 ELSE 0 END) AS g3,
@@ -1081,6 +1084,7 @@ def get_event_positions_monthly_cascade():
         SELECT
             month_idx,
             COUNT(*)::int AS events_in_month,
+            AVG(unknown_count)::float AS unknown_avg,
             AVG(g1)::float AS g1_avg,
             AVG(g2)::float AS g2_avg,
             AVG(g3)::float AS g3_avg,
@@ -1099,12 +1103,14 @@ def get_event_positions_monthly_cascade():
         m.month_idx,
         to_char(make_date(2000, m.month_idx, 1), 'Mon') AS month_label,
         COALESCE(pm.events_in_month, 0) AS events_in_month,
+        COALESCE(pm.unknown_avg, 0) AS unknown_avg,
         COALESCE(pm.g1_avg, 0) AS first_first_timer_avg,
         COALESCE(pm.g2_avg, 0) AS first_timer_comment_avg,
         COALESCE(pm.g3_avg, 0) AS super_tourist_avg,
         COALESCE(pm.g4_avg, 0) AS tourist_avg,
         COALESCE(pm.g5_avg, 0) AS returner_or_super_returner_avg,
         COALESCE(pm.g6_avg, 0) AS super_regular_avg,
+        COALESCE(pm.g7_avg, 0) AS regular_avg,
         COALESCE(pm.g7_avg, 0) AS last_event_code_count_long_gt10_avg,
         COALESCE(pm.g8_avg, 0) AS rest_avg
     FROM months m
