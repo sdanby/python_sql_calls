@@ -1052,6 +1052,8 @@ def get_event_positions_monthly_cascade():
             event_date,
             EXTRACT(MONTH FROM event_dt)::int AS month_idx,
             last_position,
+            UPPER(BTRIM(age_group)) AS age_group_norm,
+            COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int AS age_start,
             CASE
                 WHEN total_runs = 1 THEN 'g1_first_first_timer'
                 WHEN comment = 'First Timer!' THEN 'g2_first_timer_comment'
@@ -1063,16 +1065,26 @@ def get_event_positions_monthly_cascade():
                 ELSE 'g8_rest'
             END AS grp,
             CASE
-                WHEN age_group LIKE 'JM%' THEN 'a1_younger_men'
-                WHEN age_group LIKE 'YM%' THEN 'a2_adult_men'
-                WHEN age_group LIKE 'AM%' THEN 'a3_senior_men'
-                WHEN age_group LIKE 'VM%' THEN 'a4_veteran_men'
-                WHEN age_group LIKE 'SM%' THEN 'a5_super_vet_men'
-                WHEN age_group LIKE 'JW%' THEN 'a6_younger_women'
-                WHEN age_group LIKE 'YW%' THEN 'a7_adult_women'
-                WHEN age_group LIKE 'AW%' THEN 'a8_senior_women'
-                WHEN age_group LIKE 'VW%' THEN 'a9_veteran_women'
-                WHEN age_group LIKE 'SW%' THEN 'a10_super_vet_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'JM%' THEN 'a1_younger_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'YM%' THEN 'a2_adult_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'AM%' THEN 'a3_senior_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'SM%' THEN 'a2_adult_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'VM%' THEN
+                    CASE
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 65 THEN 'a5_super_vet_men'
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 50 THEN 'a4_veteran_men'
+                        ELSE 'a3_senior_men'
+                    END
+                WHEN UPPER(BTRIM(age_group)) LIKE 'JW%' THEN 'a6_younger_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'YW%' THEN 'a7_adult_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'AW%' THEN 'a8_senior_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'SW%' THEN 'a7_adult_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'VW%' THEN
+                    CASE
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 65 THEN 'a10_super_vet_women'
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 50 THEN 'a9_veteran_women'
+                        ELSE 'a8_senior_women'
+                    END
                 ELSE 'a11_unclassified'
             END AS age_super_grp
         FROM base
