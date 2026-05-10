@@ -1999,6 +1999,49 @@ def get_athlete_best_summary():
                                 COALESCE(a.recent_runs, 0) AS recent_runs
                             FROM athletes a
                         ),
+                        historical_rank_max AS (
+                            SELECT
+                                ep.athlete_code::text AS athlete_code,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE COALESCE(ep.best_curve_ranking_current_type, '') = ''
+                                ) AS best_all_time_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'E'
+                                ) AS event_all_time_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'AE'
+                                ) AS age_event_all_time_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'ES'
+                                ) AS sex_event_all_time_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'AES'
+                                ) AS age_sex_event_all_time_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE COALESCE(ep.best_curve_ranking_current_type, '') = ''
+                                      AND to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                                ) AS best_1y_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'E'
+                                      AND to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                                ) AS event_1y_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'AE'
+                                      AND to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                                ) AS age_event_1y_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'ES'
+                                      AND to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                                ) AS sex_event_1y_rank_hist,
+                                MAX(ep.best_curve_ranking_current) FILTER (
+                                    WHERE ep.best_curve_ranking_current_type = 'AES'
+                                      AND to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                                ) AS age_sex_event_1y_rank_hist
+                            FROM eventpositions ep
+                            JOIN params p ON ep.athlete_code::text = p.athlete_code
+                            WHERE ep.best_curve_ranking_current IS NOT NULL
+                            GROUP BY ep.athlete_code
+                        ),
                         stacked AS (
                             SELECT e.athlete_code::text, 'best_all_time'::text AS best_type, e.event_date::text, e.rank, e.time::text
                             FROM best_ranked e JOIN params p ON e.athlete_code::text = p.athlete_code
@@ -2055,10 +2098,28 @@ def get_athlete_best_summary():
                                          ) AS rn
                             FROM stacked
                         )
-                        SELECT athlete_code, best_type, event_date, rank, time
-                        FROM picked
+                        SELECT
+                            p.athlete_code,
+                            p.best_type,
+                            p.event_date,
+                            CASE p.best_type
+                                WHEN 'best_all_time' THEN COALESCE(hr.best_all_time_rank_hist, p.rank)
+                                WHEN 'event_all_time' THEN COALESCE(hr.event_all_time_rank_hist, p.rank)
+                                WHEN 'age_event_all_time' THEN COALESCE(hr.age_event_all_time_rank_hist, p.rank)
+                                WHEN 'sex_event_all_time' THEN COALESCE(hr.sex_event_all_time_rank_hist, p.rank)
+                                WHEN 'age_sex_event_all_time' THEN COALESCE(hr.age_sex_event_all_time_rank_hist, p.rank)
+                                WHEN 'best_1y' THEN COALESCE(hr.best_1y_rank_hist, p.rank)
+                                WHEN 'event_1y' THEN COALESCE(hr.event_1y_rank_hist, p.rank)
+                                WHEN 'age_event_1y' THEN COALESCE(hr.age_event_1y_rank_hist, p.rank)
+                                WHEN 'sex_event_1y' THEN COALESCE(hr.sex_event_1y_rank_hist, p.rank)
+                                WHEN 'age_sex_event_1y' THEN COALESCE(hr.age_sex_event_1y_rank_hist, p.rank)
+                                ELSE p.rank
+                            END AS rank,
+                            p.time
+                        FROM picked p
+                        LEFT JOIN historical_rank_max hr ON hr.athlete_code = p.athlete_code
                         WHERE rn = 1
-                        ORDER BY best_type;
+                        ORDER BY p.best_type;
                 """)
 
                 result_proxy = db.session.execute(sql, {'athlete_code': athlete_code})
