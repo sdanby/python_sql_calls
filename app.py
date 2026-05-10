@@ -1031,6 +1031,7 @@ def get_event_positions_monthly_cascade():
             ep.event_code,
             ep.event_date,
             COALESCE(ep.total_runs, a.total_runs, 0) AS total_runs,
+            COALESCE(ep.age_group, '') AS age_group,
             COALESCE(ep.comment, '') AS comment,
             COALESCE(CAST(ep.super_tourist AS TEXT), '') AS super_tourist,
             COALESCE(ep.tourist_flag, '') AS tourist_flag,
@@ -1060,7 +1061,20 @@ def get_event_positions_monthly_cascade():
                 WHEN regular = 'T' THEN 'g6_super_regular'
                 WHEN last_event_code_count_long > 10 THEN 'g7_last_event_code_count_long_gt10'
                 ELSE 'g8_rest'
-            END AS grp
+            END AS grp,
+            CASE
+                WHEN age_group LIKE 'JM%' THEN 'a1_younger_men'
+                WHEN age_group LIKE 'YM%' THEN 'a2_adult_men'
+                WHEN age_group LIKE 'AM%' THEN 'a3_senior_men'
+                WHEN age_group LIKE 'VM%' THEN 'a4_veteran_men'
+                WHEN age_group LIKE 'SM%' THEN 'a5_super_vet_men'
+                WHEN age_group LIKE 'JW%' THEN 'a6_younger_women'
+                WHEN age_group LIKE 'YW%' THEN 'a7_adult_women'
+                WHEN age_group LIKE 'AW%' THEN 'a8_senior_women'
+                WHEN age_group LIKE 'VW%' THEN 'a9_veteran_women'
+                WHEN age_group LIKE 'SW%' THEN 'a10_super_vet_women'
+                ELSE 'a11_unclassified'
+            END AS age_super_grp
         FROM base
         WHERE event_dt IS NOT NULL
     ),
@@ -1076,7 +1090,18 @@ def get_event_positions_monthly_cascade():
             SUM(CASE WHEN grp = 'g5_returner_or_super_returner' THEN 1 ELSE 0 END) AS g5,
             SUM(CASE WHEN grp = 'g6_super_regular' THEN 1 ELSE 0 END) AS g6,
             SUM(CASE WHEN grp = 'g7_last_event_code_count_long_gt10' THEN 1 ELSE 0 END) AS g7,
-            SUM(CASE WHEN grp = 'g8_rest' THEN 1 ELSE 0 END) AS g8
+            SUM(CASE WHEN grp = 'g8_rest' THEN 1 ELSE 0 END) AS g8,
+            SUM(CASE WHEN age_super_grp = 'a1_younger_men' THEN 1 ELSE 0 END) AS a1,
+            SUM(CASE WHEN age_super_grp = 'a2_adult_men' THEN 1 ELSE 0 END) AS a2,
+            SUM(CASE WHEN age_super_grp = 'a3_senior_men' THEN 1 ELSE 0 END) AS a3,
+            SUM(CASE WHEN age_super_grp = 'a4_veteran_men' THEN 1 ELSE 0 END) AS a4,
+            SUM(CASE WHEN age_super_grp = 'a5_super_vet_men' THEN 1 ELSE 0 END) AS a5,
+            SUM(CASE WHEN age_super_grp = 'a6_younger_women' THEN 1 ELSE 0 END) AS a6,
+            SUM(CASE WHEN age_super_grp = 'a7_adult_women' THEN 1 ELSE 0 END) AS a7,
+            SUM(CASE WHEN age_super_grp = 'a8_senior_women' THEN 1 ELSE 0 END) AS a8,
+            SUM(CASE WHEN age_super_grp = 'a9_veteran_women' THEN 1 ELSE 0 END) AS a9,
+            SUM(CASE WHEN age_super_grp = 'a10_super_vet_women' THEN 1 ELSE 0 END) AS a10,
+            SUM(CASE WHEN age_super_grp = 'a11_unclassified' THEN 1 ELSE 0 END) AS a11
         FROM classified
         GROUP BY event_date, month_idx
     ),
@@ -1092,7 +1117,18 @@ def get_event_positions_monthly_cascade():
             AVG(g5)::float AS g5_avg,
             AVG(g6)::float AS g6_avg,
             AVG(g7)::float AS g7_avg,
-            AVG(g8)::float AS g8_avg
+            AVG(g8)::float AS g8_avg,
+            AVG(a1)::float AS a1_avg,
+            AVG(a2)::float AS a2_avg,
+            AVG(a3)::float AS a3_avg,
+            AVG(a4)::float AS a4_avg,
+            AVG(a5)::float AS a5_avg,
+            AVG(a6)::float AS a6_avg,
+            AVG(a7)::float AS a7_avg,
+            AVG(a8)::float AS a8_avg,
+            AVG(a9)::float AS a9_avg,
+            AVG(a10)::float AS a10_avg,
+            AVG(a11)::float AS a11_avg
         FROM per_event
         GROUP BY month_idx
     ),
@@ -1112,7 +1148,18 @@ def get_event_positions_monthly_cascade():
         COALESCE(pm.g6_avg, 0) AS super_regular_avg,
         COALESCE(pm.g7_avg, 0) AS regular_avg,
         COALESCE(pm.g7_avg, 0) AS last_event_code_count_long_gt10_avg,
-        COALESCE(pm.g8_avg, 0) AS rest_avg
+        COALESCE(pm.g8_avg, 0) AS rest_avg,
+        COALESCE(pm.a1_avg, 0) AS younger_men_avg,
+        COALESCE(pm.a2_avg, 0) AS adult_men_avg,
+        COALESCE(pm.a3_avg, 0) AS senior_men_avg,
+        COALESCE(pm.a4_avg, 0) AS veteran_men_avg,
+        COALESCE(pm.a5_avg, 0) AS super_vet_men_avg,
+        COALESCE(pm.a6_avg, 0) AS younger_women_avg,
+        COALESCE(pm.a7_avg, 0) AS adult_women_avg,
+        COALESCE(pm.a8_avg, 0) AS senior_women_avg,
+        COALESCE(pm.a9_avg, 0) AS veteran_women_avg,
+        COALESCE(pm.a10_avg, 0) AS super_vet_women_avg,
+        COALESCE(pm.a11_avg, 0) AS unclassified_avg
     FROM months m
     LEFT JOIN per_month pm ON pm.month_idx = m.month_idx
     ORDER BY m.month_idx;
