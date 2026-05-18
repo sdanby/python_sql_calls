@@ -2005,73 +2005,73 @@ def get_athlete_best_summary():
                             FROM athletes a
                         ),
                         stacked AS (
-                            SELECT athlete_code, 'best_all_time'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, event_dt
+                                                        SELECT athlete_code, 'best_all_time'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_b IS NOT NULL
 
                             UNION ALL
-                            SELECT athlete_code, 'event_all_time'::text AS best_type, event_date, current_best_rank_e AS rank, event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'event_all_time'::text AS best_type, event_date, current_best_rank_e AS rank, event_adj_time::text AS time, event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_e IS NOT NULL
 
                             UNION ALL
-                            SELECT athlete_code, 'age_event_all_time'::text AS best_type, event_date, current_best_rank_ae AS rank, age_event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'age_event_all_time'::text AS best_type, event_date, current_best_rank_ae AS rank, age_event_adj_time::text AS time, age_event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_ae IS NOT NULL
 
                             UNION ALL
-                            SELECT athlete_code, 'sex_event_all_time'::text AS best_type, event_date, current_best_rank_es AS rank, sex_event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'sex_event_all_time'::text AS best_type, event_date, current_best_rank_es AS rank, sex_event_adj_time::text AS time, sex_event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_es IS NOT NULL
 
                             UNION ALL
-                            SELECT athlete_code, 'age_sex_event_all_time'::text AS best_type, event_date, current_best_rank_aes AS rank, age_sex_event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'age_sex_event_all_time'::text AS best_type, event_date, current_best_rank_aes AS rank, age_sex_event_adj_time::text AS time, age_sex_event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_aes IS NOT NULL
 
                             UNION ALL
-                            SELECT athlete_code, 'best_1y'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, event_dt
+                                                        SELECT athlete_code, 'best_1y'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_b IS NOT NULL
                               AND event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
 
                             UNION ALL
-                            SELECT athlete_code, 'event_1y'::text AS best_type, event_date, current_best_rank_e AS rank, event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'event_1y'::text AS best_type, event_date, current_best_rank_e AS rank, event_adj_time::text AS time, event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_e IS NOT NULL
                               AND event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
 
                             UNION ALL
-                            SELECT athlete_code, 'age_event_1y'::text AS best_type, event_date, current_best_rank_ae AS rank, age_event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'age_event_1y'::text AS best_type, event_date, current_best_rank_ae AS rank, age_event_adj_time::text AS time, age_event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_ae IS NOT NULL
                               AND event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
 
                             UNION ALL
-                            SELECT athlete_code, 'sex_event_1y'::text AS best_type, event_date, current_best_rank_es AS rank, sex_event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'sex_event_1y'::text AS best_type, event_date, current_best_rank_es AS rank, sex_event_adj_time::text AS time, sex_event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_es IS NOT NULL
                               AND event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
 
                             UNION ALL
-                            SELECT athlete_code, 'age_sex_event_1y'::text AS best_type, event_date, current_best_rank_aes AS rank, age_sex_event_adj_time::text AS time, event_dt
+                                                        SELECT athlete_code, 'age_sex_event_1y'::text AS best_type, event_date, current_best_rank_aes AS rank, age_sex_event_adj_time::text AS time, age_sex_event_adj_time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
                             WHERE current_best_rank_aes IS NOT NULL
                               AND event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
 
                             UNION ALL
-                            SELECT tr.athlete_code, 'total_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.total_runs::text AS time, CURRENT_DATE::date AS event_dt
+                                                        SELECT tr.athlete_code, 'total_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.total_runs::text AS time, NULL::numeric AS sort_seconds, CURRENT_DATE::date AS event_dt
                             FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
 
                             UNION ALL
-                            SELECT tr.athlete_code, 'recent_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.recent_runs::text AS time, CURRENT_DATE::date AS event_dt
+                                                        SELECT tr.athlete_code, 'recent_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.recent_runs::text AS time, NULL::numeric AS sort_seconds, CURRENT_DATE::date AS event_dt
                             FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
                         ),
                         picked AS (
                             SELECT *,
                                    ROW_NUMBER() OVER (
                                        PARTITION BY athlete_code, best_type
-                                       ORDER BY rank DESC NULLS LAST, event_dt DESC NULLS LAST, event_date DESC NULLS LAST
+                                                                             ORDER BY rank DESC NULLS LAST, sort_seconds ASC NULLS LAST, event_dt DESC NULLS LAST, event_date DESC NULLS LAST
                                    ) AS rn
                             FROM stacked
                         )
