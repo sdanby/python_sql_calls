@@ -1899,30 +1899,46 @@ def get_club_members():
         return jsonify({'error': 'Missing required parameter: club'}), 400
 
     sql = text("""
+        WITH latest_age_group AS (
+            SELECT DISTINCT ON (ep.athlete_code)
+                CAST(ep.athlete_code AS TEXT) AS athlete_code,
+                ep.age_group AS latest_age_group
+            FROM eventpositions ep
+            WHERE ep.athlete_code IS NOT NULL
+              AND BTRIM(CAST(ep.athlete_code AS TEXT)) <> ''
+            ORDER BY
+                ep.athlete_code,
+                TO_DATE(ep.event_date, 'DD/MM/YYYY') DESC NULLS LAST,
+                ep.event_date DESC NULLS LAST,
+                ep.position ASC
+        )
         SELECT
-            athlete_code,
-            name,
-            club_key,
-            current_club,
-            club_runs_total,
-            club_runs_last_year,
-            first_club_run_date,
-            last_club_run_date,
-            fastest_time,
-            fastest_time_seconds,
-            best_event_adj_time,
-            best_event_adj_time_seconds,
-            best_age_event_adj_time,
-            best_age_event_adj_time_seconds,
-            best_age_sex_event_adj_time,
-            best_age_sex_event_adj_time_seconds,
-            best_curve_ranking_current,
-            best_curve_ranking_historic,
-            best_curve_ranking_current_type,
-            total_runs_all_clubs
-        FROM mv_club_members_cache
-        WHERE club_key = BTRIM(:club)
-        ORDER BY club_runs_total DESC, name
+            m.athlete_code,
+            m.name,
+            m.club_key,
+            m.current_club,
+            lag.latest_age_group,
+            m.club_runs_total,
+            m.club_runs_last_year,
+            m.first_club_run_date,
+            m.last_club_run_date,
+            m.fastest_time,
+            m.fastest_time_seconds,
+            m.best_event_adj_time,
+            m.best_event_adj_time_seconds,
+            m.best_age_event_adj_time,
+            m.best_age_event_adj_time_seconds,
+            m.best_age_sex_event_adj_time,
+            m.best_age_sex_event_adj_time_seconds,
+            m.best_curve_ranking_current,
+            m.best_curve_ranking_historic,
+            m.best_curve_ranking_current_type,
+            m.total_runs_all_clubs
+        FROM mv_club_members_cache m
+        LEFT JOIN latest_age_group lag
+          ON lag.athlete_code = CAST(m.athlete_code AS TEXT)
+        WHERE m.club_key = BTRIM(:club)
+        ORDER BY m.club_runs_total DESC, m.name
         LIMIT :limit
     """)
 
