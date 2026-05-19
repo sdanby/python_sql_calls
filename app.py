@@ -1947,7 +1947,6 @@ def get_club_course_summary():
                 MAX(CAST(formatted_date AS date)) AS anchor_date
             FROM eventpositions
             WHERE formatted_date IS NOT NULL
-              AND BTRIM(formatted_date) <> ''
         ),
         base AS (
             SELECT
@@ -1959,8 +1958,7 @@ def get_club_course_summary():
             JOIN events ev
               ON ev.event_code = ep.event_code
             CROSS JOIN params p
-            WHERE ep.formatted_date IS NOT NULL
-              AND BTRIM(ep.formatted_date) <> ''
+                        WHERE ep.formatted_date IS NOT NULL
               AND LOWER(BTRIM(COALESCE(ep.club, ''))) = LOWER(p.target_club)
         ),
         all_history AS (
