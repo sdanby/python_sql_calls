@@ -1930,6 +1930,99 @@ def get_club_members():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
+
+@app.route('/api/clubs/course-summary', methods=['GET'])
+def get_club_course_summary():
+    club = (request.args.get('club') or '').strip()
+    limit = request.args.get('limit', default=1000, type=int)
+    limit = max(1, min(limit, 5000))
+
+    if not club:
+        return jsonify({'error': 'Missing required parameter: club'}), 400
+
+    sql = text("""
+        WITH params AS (
+            SELECT
+                BTRIM(:club) AS target_club,
+                MAX(CAST(formatted_date AS date)) AS anchor_date
+            FROM eventpositions
+            WHERE formatted_date IS NOT NULL
+              AND BTRIM(formatted_date) <> ''
+        ),
+        base AS (
+            SELECT
+                ep.event_code,
+                COALESCE(NULLIF(ev.display_name, ''), ev.event_name) AS event_name,
+                CAST(ep.formatted_date AS date) AS event_day,
+                ep.athlete_code
+            FROM eventpositions ep
+            JOIN events ev
+              ON ev.event_code = ep.event_code
+            CROSS JOIN params p
+            WHERE ep.formatted_date IS NOT NULL
+              AND BTRIM(ep.formatted_date) <> ''
+              AND LOWER(BTRIM(COALESCE(ep.club, ''))) = LOWER(p.target_club)
+        ),
+        all_history AS (
+            SELECT
+                b.event_code,
+                b.event_name,
+                COUNT(DISTINCT b.event_day)::int AS events_held_all_history,
+                COUNT(*)::int AS club_runs_all_history,
+                COUNT(DISTINCT b.athlete_code)::int AS athletes_all_history
+            FROM base b
+            GROUP BY b.event_code, b.event_name
+        ),
+        last_year AS (
+            SELECT
+                b.event_code,
+                b.event_name,
+                COUNT(DISTINCT b.event_day)::int AS events_held_last_year,
+                COUNT(*)::int AS club_runs_last_year,
+                COUNT(DISTINCT b.athlete_code)::int AS athletes_last_year
+            FROM base b
+            CROSS JOIN params p
+            WHERE p.anchor_date IS NOT NULL
+              AND b.event_day >= (p.anchor_date - INTERVAL '1 year')
+            GROUP BY b.event_code, b.event_name
+        )
+        SELECT
+            a.event_code,
+            a.event_name,
+            a.events_held_all_history,
+            a.club_runs_all_history,
+            a.athletes_all_history,
+            RANK() OVER (
+                ORDER BY
+                    a.club_runs_all_history DESC,
+                    a.events_held_all_history DESC,
+                    a.athletes_all_history DESC,
+                    a.event_name ASC
+            )::int AS rank_all_history,
+            COALESCE(l.events_held_last_year, 0)::int AS events_held_last_year,
+            COALESCE(l.club_runs_last_year, 0)::int AS club_runs_last_year,
+            COALESCE(l.athletes_last_year, 0)::int AS athletes_last_year,
+            RANK() OVER (
+                ORDER BY
+                    COALESCE(l.club_runs_last_year, 0) DESC,
+                    COALESCE(l.events_held_last_year, 0) DESC,
+                    COALESCE(l.athletes_last_year, 0) DESC,
+                    a.event_name ASC
+            )::int AS rank_last_year
+        FROM all_history a
+        LEFT JOIN last_year l
+          ON l.event_code = a.event_code
+        ORDER BY
+            a.club_runs_all_history DESC,
+            a.events_held_all_history DESC,
+            a.event_name ASC
+        LIMIT :limit
+    """)
+
+    result = db.session.execute(sql, {'club': club, 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
 @app.route('/api/athlete_best_summary', methods=['GET'])
 def get_athlete_best_summary():
         """
