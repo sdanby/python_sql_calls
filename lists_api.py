@@ -70,6 +70,29 @@ def get_fastest_runs_by_athlete():
                 'error': 'Invalid period',
                 'allowed': ['all_time', 'last_year']
             }), 400
+
+        participant_filter_aliases = {
+            'all': 'all_participants',
+            'all_participants': 'all_participants',
+            'gt_50_total_runs': 'gt_50_total_runs',
+            'gt_50_local_runs': 'gt_50_local_runs',
+            'gt_10_local_runs_1y': 'gt_10_local_runs_1y',
+        }
+        participant_filter = participant_filter_aliases.get(
+            request.args.get('participant_filter', 'all_participants').lower(),
+        )
+        if participant_filter is None:
+            return jsonify({
+                'error': 'Invalid participant filter',
+                'allowed': sorted(list(participant_filter_aliases.keys()))
+            }), 400
+
+        participant_filter_sql = {
+            'all_participants': '1=1',
+            'gt_50_total_runs': 'COALESCE(f.total_runs_all_parkruns, 0) > 50',
+            'gt_50_local_runs': 'COALESCE(f.total_runs_local_parkruns, 0) > 50',
+            'gt_10_local_runs_1y': 'COALESCE(f.total_runs_local_parkruns_1y, 0) > 10',
+        }
         
         sort_to_view = sort_to_view_last_year if period == 'last_year' else sort_to_view_all_time
         
@@ -103,12 +126,20 @@ def get_fastest_runs_by_athlete():
             limit = 10000
 
         selected_view = sort_to_view[sort]
+        selected_participant_filter = participant_filter_sql[participant_filter]
 
         # Build and execute query from the selected materialized view.
         sql = f"""
-            SELECT *
-            FROM {selected_view}
-            ORDER BY {sort} {direction.upper()}, athlete_code
+            SELECT
+                v.*, 
+                f.total_runs_all_parkruns,
+                f.total_runs_local_parkruns,
+                f.total_runs_local_parkruns_1y
+            FROM {selected_view} v
+            LEFT JOIN mv_participant_run_filters f
+              ON f.athlete_code = v.athlete_code
+            WHERE {selected_participant_filter}
+            ORDER BY v.{sort} {direction.upper()}, v.athlete_code
             LIMIT :limit;
         """
 
