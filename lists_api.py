@@ -39,8 +39,8 @@ def get_fastest_runs_by_athlete():
     from app import db  # Import db here to avoid circular import
     from flask import request
     try:
-        # Sort whitelist mapped to pre-built materialized views.
-        sort_to_view_all_time = {
+        # Representative-row whitelist mapped to pre-built materialized views.
+        view_sort_to_view_all_time = {
             'time_seconds': 'mv_best_curve',
             'season_adj_time_seconds': 'mv_best_season_curve',
             'event_adj_time_seconds': 'mv_best_event_curve',
@@ -52,7 +52,7 @@ def get_fastest_runs_by_athlete():
             'age_sex_event_adj_time_seconds': 'mv_best_age_sex_event_curve',
         }
         
-        sort_to_view_last_year = {
+        view_sort_to_view_last_year = {
             'time_seconds': 'mv_best_1y_curve',
             'season_adj_time_seconds': 'mv_best_season_1y_curve',
             'event_adj_time_seconds': 'mv_best_event_1y_curve',
@@ -93,14 +93,35 @@ def get_fastest_runs_by_athlete():
             'gt_50_local_runs': 'COALESCE(f.total_runs_local_parkruns, 0) > 50',
             'gt_10_local_runs_1y': 'COALESCE(f.total_runs_local_parkruns_1y, 0) > 10',
         }
-        
-        sort_to_view = sort_to_view_last_year if period == 'last_year' else sort_to_view_all_time
-        
+
+        view_sort_to_view = view_sort_to_view_last_year if period == 'last_year' else view_sort_to_view_all_time
+        order_by_sql = {
+            'time_seconds': 'v.time_seconds',
+            'season_adj_time_seconds': 'v.season_adj_time_seconds',
+            'event_adj_time_seconds': 'v.event_adj_time_seconds',
+            'age_adj_time_seconds': 'v.age_adj_time_seconds',
+            'sex_adj_time_seconds': 'v.sex_adj_time_seconds',
+            'age_sex_adj_time_seconds': 'v.age_sex_adj_time_seconds',
+            'age_event_adj_time_seconds': 'v.age_event_adj_time_seconds',
+            'sex_event_adj_time_seconds': 'v.sex_event_adj_time_seconds',
+            'age_sex_event_adj_time_seconds': 'v.age_sex_event_adj_time_seconds',
+            'total_runs_all_parkruns': 'COALESCE(f.total_runs_all_parkruns, 0)',
+            'total_runs_local_parkruns': 'COALESCE(f.total_runs_local_parkruns, 0)',
+            'total_runs_local_parkruns_1y': 'COALESCE(f.total_runs_local_parkruns_1y, 0)',
+        }
+
+        view_sort = request.args.get('view_sort', request.args.get('sort', 'time_seconds'))
+        if view_sort not in view_sort_to_view:
+            return jsonify({
+                'error': 'Invalid representative view column',
+                'allowed': sorted(list(view_sort_to_view.keys()))
+            }), 400
+
         sort = request.args.get('sort', 'time_seconds')
-        if sort not in sort_to_view:
+        if sort not in order_by_sql:
             return jsonify({
                 'error': 'Invalid sort column',
-                'allowed': sorted(list(sort_to_view.keys()))
+                'allowed': sorted(list(order_by_sql.keys()))
             }), 400
             
         direction = request.args.get('direction', 'asc').lower()
@@ -108,13 +129,6 @@ def get_fastest_runs_by_athlete():
             limit = int(request.args.get('limit', 1000))
         except (ValueError, TypeError):
             limit = 1000
-
-        # Validate inputs
-        if sort not in sort_to_view:
-            return jsonify({
-                'error': 'Invalid sort column',
-                'allowed': sorted(list(sort_to_view.keys()))
-            }), 400
 
         if direction not in ('asc', 'desc'):
             direction = 'asc'
@@ -125,8 +139,9 @@ def get_fastest_runs_by_athlete():
         elif limit > 10000:
             limit = 10000
 
-        selected_view = sort_to_view[sort]
+        selected_view = view_sort_to_view[view_sort]
         selected_participant_filter = participant_filter_sql[participant_filter]
+        selected_order_by = order_by_sql[sort]
 
         # Build and execute query from the selected materialized view.
         sql = f"""
@@ -139,7 +154,7 @@ def get_fastest_runs_by_athlete():
             LEFT JOIN mv_participant_run_filters f
               ON f.athlete_code = v.athlete_code
             WHERE {selected_participant_filter}
-            ORDER BY v.{sort} {direction.upper()}, v.athlete_code
+                        ORDER BY {selected_order_by} {direction.upper()}, v.athlete_code
             LIMIT :limit;
         """
 
