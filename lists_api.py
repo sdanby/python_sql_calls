@@ -109,6 +109,17 @@ def get_fastest_runs_by_athlete():
             'total_runs_local_parkruns': 'COALESCE(f.total_runs_local_parkruns, 0)',
             'total_runs_local_parkruns_1y': 'COALESCE(f.total_runs_local_parkruns_1y, 0)',
         }
+        view_order_by_sql = {
+            'time_seconds': 'v0.time_seconds',
+            'season_adj_time_seconds': 'v0.season_adj_time_seconds',
+            'event_adj_time_seconds': 'v0.event_adj_time_seconds',
+            'age_adj_time_seconds': 'v0.age_adj_time_seconds',
+            'sex_adj_time_seconds': 'v0.sex_adj_time_seconds',
+            'age_sex_adj_time_seconds': 'v0.age_sex_adj_time_seconds',
+            'age_event_adj_time_seconds': 'v0.age_event_adj_time_seconds',
+            'sex_event_adj_time_seconds': 'v0.sex_event_adj_time_seconds',
+            'age_sex_event_adj_time_seconds': 'v0.age_sex_event_adj_time_seconds',
+        }
 
         view_sort = request.args.get('view_sort', request.args.get('sort', 'time_seconds'))
         if view_sort not in view_sort_to_view:
@@ -142,21 +153,52 @@ def get_fastest_runs_by_athlete():
         selected_view = view_sort_to_view[view_sort]
         selected_participant_filter = participant_filter_sql[participant_filter]
         selected_order_by = order_by_sql[sort]
+        selected_view_order_by = view_order_by_sql[view_sort]
+        selection_scope = request.args.get('selection_scope', 'all_eligible').lower()
+        if selection_scope not in ('all_eligible', 'selected_view_top_1000'):
+            return jsonify({
+                'error': 'Invalid selection scope',
+                'allowed': ['all_eligible', 'selected_view_top_1000']
+            }), 400
 
         # Build and execute query from the selected materialized view.
-        sql = f"""
-            SELECT
-                v.*, 
-                f.total_runs_all_parkruns,
-                f.total_runs_local_parkruns,
-                f.total_runs_local_parkruns_1y
-            FROM {selected_view} v
-            LEFT JOIN mv_participant_run_filters f
-              ON f.athlete_code = v.athlete_code
-            WHERE {selected_participant_filter}
-                        ORDER BY {selected_order_by} {direction.upper()}, v.athlete_code
-            LIMIT :limit;
-        """
+        if selection_scope == 'selected_view_top_1000':
+            sql = f"""
+                WITH eligible_athletes AS (
+                    SELECT v0.athlete_code
+                    FROM {selected_view} v0
+                    LEFT JOIN mv_participant_run_filters f0
+                      ON f0.athlete_code = v0.athlete_code
+                    WHERE {selected_participant_filter.replace('f.', 'f0.')}
+                    ORDER BY {selected_view_order_by} ASC, v0.athlete_code
+                    LIMIT :limit
+                )
+                SELECT
+                    v.*,
+                    f.total_runs_all_parkruns,
+                    f.total_runs_local_parkruns,
+                    f.total_runs_local_parkruns_1y
+                FROM eligible_athletes ea
+                JOIN {selected_view} v
+                  ON v.athlete_code = ea.athlete_code
+                LEFT JOIN mv_participant_run_filters f
+                  ON f.athlete_code = v.athlete_code
+                ORDER BY {selected_order_by} {direction.upper()}, v.athlete_code;
+            """
+        else:
+            sql = f"""
+                SELECT
+                    v.*, 
+                    f.total_runs_all_parkruns,
+                    f.total_runs_local_parkruns,
+                    f.total_runs_local_parkruns_1y
+                FROM {selected_view} v
+                LEFT JOIN mv_participant_run_filters f
+                  ON f.athlete_code = v.athlete_code
+                WHERE {selected_participant_filter}
+                ORDER BY {selected_order_by} {direction.upper()}, v.athlete_code
+                LIMIT :limit;
+            """
 
         sql_query = text(sql)
         result_proxy = db.session.execute(sql_query, {'limit': limit})
@@ -217,26 +259,36 @@ def get_event_summary_by_code():
 
                 sql = text("""
                         SELECT
-                            athlete_code,
-                            name,
-                            club,
-                            min_time_mmss,
-                            min_event_adj_mmss,
-                            min_age_event_adj_mmss,
-                            min_age_sex_event_adj_mmss,
-                            appearances,
-                            volunteer_count,
-                            total_count,
-                            best_curve_ranking_current,
-                            best_curve_ranking_historic,
-                            best_curve_ranking_current_type,
-                            last_run_date_ddmmyyyy AS last_run_date,
-                            days_since_last_run,
-                            last_volunteer_date_ddmmyyyy AS last_volunteer_date,
-                            days_since_last_volunteered
-                        FROM mv_event_summary_cache
-                        WHERE event_code = :event_code
-                        ORDER BY total_count DESC, appearances DESC, volunteer_count DESC, athlete_code
+                            summary.athlete_code,
+                            summary.name,
+                            age_lookup.age_group,
+                            summary.club,
+                            summary.min_time_mmss,
+                            summary.min_event_adj_mmss,
+                            summary.min_age_event_adj_mmss,
+                            summary.min_age_sex_event_adj_mmss,
+                            summary.appearances,
+                            summary.volunteer_count,
+                            summary.total_count,
+                            summary.best_curve_ranking_current,
+                            summary.best_curve_ranking_historic,
+                            summary.best_curve_ranking_current_type,
+                            summary.last_run_date_ddmmyyyy AS last_run_date,
+                            summary.days_since_last_run,
+                            summary.last_volunteer_date_ddmmyyyy AS last_volunteer_date,
+                            summary.days_since_last_volunteered
+                        FROM mv_event_summary_cache summary
+                        LEFT JOIN LATERAL (
+                            SELECT er.age_group
+                            FROM mv_extend_runs er
+                            WHERE er.event_code = summary.event_code
+                              AND er.athlete_code = summary.athlete_code
+                              AND er.event_dt IS NOT NULL
+                            ORDER BY er.event_dt DESC
+                            LIMIT 1
+                        ) age_lookup ON TRUE
+                        WHERE summary.event_code = :event_code
+                        ORDER BY summary.total_count DESC, summary.appearances DESC, summary.volunteer_count DESC, summary.athlete_code
                         LIMIT :limit;
                     """)
 
