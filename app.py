@@ -426,6 +426,40 @@ def create_feedback_request():
     }), 201
 
 
+@app.route('/api/feedback-requests/<int:request_id>', methods=['PUT'])
+def update_feedback_request(request_id):
+    payload = request.get_json(silent=True) or {}
+    request_type_raw = str(payload.get('type') or '').strip().lower()
+    title = str(payload.get('title') or '').strip()
+    details = str(payload.get('details') or '').strip()
+
+    if request_type_raw not in ('error', 'suggestion'):
+        return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
+    if not title:
+        return jsonify({'error': 'title is required'}), 400
+    if not details:
+        return jsonify({'error': 'details are required'}), 400
+
+    row = FeedbackRequest.query.filter_by(id=request_id).first()
+    if not row:
+        return jsonify({'error': 'feedback request not found'}), 404
+
+    row.request_type = request_type_raw
+    row.title = title
+    row.details = details
+    row.status = 'Updated'
+    db.session.commit()
+
+    return jsonify({
+        'id': row.id,
+        'type': request_type_raw,
+        'title': row.title,
+        'details': row.details,
+        'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
+        'status': row.status or 'Updated'
+    }), 200
+
+
 def _format_db_datetime(value):
     if value is None:
         return None
