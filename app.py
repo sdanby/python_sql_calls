@@ -221,6 +221,9 @@ class FeedbackRequest(db.Model):
     title = db.Column(db.String(255), nullable=False)
     details = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(32), nullable=False, default='Logged')
+    created_by_user_id = db.Column(db.Integer, nullable=True, index=True)
+    created_by_display_name = db.Column(db.String(255), nullable=True)
+    created_by_email = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -243,6 +246,16 @@ with app.app_context():
         db.session.commit()
     if 'default_course_name' not in auth_user_columns:
         db.session.execute(text("ALTER TABLE auth_users ADD COLUMN default_course_name VARCHAR(255)"))
+        db.session.commit()
+    feedback_request_columns = {column['name'] for column in inspector.get_columns('feedback_requests')}
+    if 'created_by_user_id' not in feedback_request_columns:
+        db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN created_by_user_id INTEGER"))
+        db.session.commit()
+    if 'created_by_display_name' not in feedback_request_columns:
+        db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN created_by_display_name VARCHAR(255)"))
+        db.session.commit()
+    if 'created_by_email' not in feedback_request_columns:
+        db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN created_by_email VARCHAR(255)"))
         db.session.commit()
 
 
@@ -376,30 +389,51 @@ def _require_authenticated_user():
     return _sess, user
 
 
+def _feedback_creator_label(row):
+    display_name = str(row.created_by_display_name or '').strip()
+    if display_name:
+        return display_name
+    email = str(row.created_by_email or '').strip()
+    if email:
+        return email
+    return 'Unknown'
+
+
+def _feedback_payload(row):
+    return {
+        'id': row.id,
+        'type': 'error' if str(row.request_type).lower() == 'error' else 'suggestion',
+        'title': row.title,
+        'details': row.details,
+        'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
+        'status': (row.status or 'logged').lower(),
+        'createdBy': _feedback_creator_label(row)
+    }
+
+
 @app.route('/api/feedback-requests', methods=['GET'])
 def get_feedback_requests():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
     rows = FeedbackRequest.query.order_by(FeedbackRequest.id.asc()).all()
     payload = []
     for row in rows:
-        payload.append({
-            'id': row.id,
-            'type': 'error' if str(row.request_type).lower() == 'error' else 'suggestion',
-            'title': row.title,
-            'details': row.details,
-            'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
-            'status': row.status or 'Logged'
-        })
+        payload.append(_feedback_payload(row))
     return jsonify(payload), 200
 
 
 @app.route('/api/feedback-requests', methods=['POST'])
 def create_feedback_request():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
     payload = request.get_json(silent=True) or {}
     request_type_raw = str(payload.get('type') or '').strip().lower()
     title = str(payload.get('title') or '').strip()
     details = str(payload.get('details') or '').strip()
-    status_raw = str(payload.get('status') or 'logged').strip().lower()
-    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed'}
 
     if request_type_raw not in ('error', 'suggestion'):
         return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
@@ -407,31 +441,31 @@ def create_feedback_request():
         return jsonify({'error': 'title is required'}), 400
     if not details:
         return jsonify({'error': 'details are required'}), 400
-    if status_raw not in allowed_statuses:
-        return jsonify({'error': 'status is invalid'}), 400
 
     row = FeedbackRequest(
         request_type=request_type_raw,
         title=title,
         details=details,
-        status=status_raw,
+        status='logged',
+        created_by_user_id=user.id,
+        created_by_display_name=(user.display_name or '').strip() or None,
+        created_by_email=user.email,
         created_at=datetime.utcnow()
     )
     db.session.add(row)
     db.session.commit()
 
-    return jsonify({
-        'id': row.id,
-        'type': request_type_raw,
-        'title': row.title,
-        'details': row.details,
-        'dateLogged': row.created_at.strftime('%Y-%m-%d'),
-        'status': row.status
-    }), 201
+    return jsonify(_feedback_payload(row)), 201
 
 
 @app.route('/api/feedback-requests/<int:request_id>', methods=['PUT'])
 def update_feedback_request(request_id):
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not bool(user.is_admin):
+        return jsonify({'error': 'Forbidden'}), 403
+
     payload = request.get_json(silent=True) or {}
     request_type_raw = str(payload.get('type') or '').strip().lower()
     title = str(payload.get('title') or '').strip()
@@ -458,14 +492,7 @@ def update_feedback_request(request_id):
     row.status = status_raw
     db.session.commit()
 
-    return jsonify({
-        'id': row.id,
-        'type': request_type_raw,
-        'title': row.title,
-        'details': row.details,
-        'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
-        'status': row.status or 'updated'
-    }), 200
+    return jsonify(_feedback_payload(row)), 200
 
 
 def _format_db_datetime(value):
