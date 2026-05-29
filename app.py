@@ -398,6 +398,8 @@ def create_feedback_request():
     request_type_raw = str(payload.get('type') or '').strip().lower()
     title = str(payload.get('title') or '').strip()
     details = str(payload.get('details') or '').strip()
+    status_raw = str(payload.get('status') or 'logged').strip().lower()
+    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed'}
 
     if request_type_raw not in ('error', 'suggestion'):
         return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
@@ -405,12 +407,14 @@ def create_feedback_request():
         return jsonify({'error': 'title is required'}), 400
     if not details:
         return jsonify({'error': 'details are required'}), 400
+    if status_raw not in allowed_statuses:
+        return jsonify({'error': 'status is invalid'}), 400
 
     row = FeedbackRequest(
         request_type=request_type_raw,
         title=title,
         details=details,
-        status='Logged',
+        status=status_raw,
         created_at=datetime.utcnow()
     )
     db.session.add(row)
@@ -432,6 +436,8 @@ def update_feedback_request(request_id):
     request_type_raw = str(payload.get('type') or '').strip().lower()
     title = str(payload.get('title') or '').strip()
     details = str(payload.get('details') or '').strip()
+    status_raw = str(payload.get('status') or 'updated').strip().lower()
+    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed'}
 
     if request_type_raw not in ('error', 'suggestion'):
         return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
@@ -439,6 +445,8 @@ def update_feedback_request(request_id):
         return jsonify({'error': 'title is required'}), 400
     if not details:
         return jsonify({'error': 'details are required'}), 400
+    if status_raw not in allowed_statuses:
+        return jsonify({'error': 'status is invalid'}), 400
 
     row = FeedbackRequest.query.filter_by(id=request_id).first()
     if not row:
@@ -447,7 +455,7 @@ def update_feedback_request(request_id):
     row.request_type = request_type_raw
     row.title = title
     row.details = details
-    row.status = 'Updated'
+    row.status = status_raw
     db.session.commit()
 
     return jsonify({
@@ -456,7 +464,7 @@ def update_feedback_request(request_id):
         'title': row.title,
         'details': row.details,
         'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
-        'status': row.status or 'Updated'
+        'status': row.status or 'updated'
     }), 200
 
 
