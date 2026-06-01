@@ -185,7 +185,7 @@ def get_fastest_runs_by_athlete():
                     ORDER BY {selected_view_order_by} ASC, v0.athlete_code
                     LIMIT :limit
                 ), latest_rank AS (
-                    SELECT DISTINCT ON (m.athlete_code)
+                    SELECT
                         m.athlete_code,
                         m.current_best_rank_b,
                         m.best_curve_ranking_current,
@@ -193,9 +193,7 @@ def get_fastest_runs_by_athlete():
                         m.current_best_rank_ae,
                         m.current_best_rank_es,
                         m.current_best_rank_aes
-                    FROM mv_extend_runs m
-                    WHERE m.athlete_code IS NOT NULL AND BTRIM(m.athlete_code) <> ''
-                    ORDER BY m.athlete_code, m.event_dt DESC NULLS LAST, m.event_code DESC
+                    FROM mv_latest_curve_ranks m
                 )
                 SELECT
                     v.*,
@@ -216,7 +214,7 @@ def get_fastest_runs_by_athlete():
         else:
             sql = f"""
                 WITH latest_rank AS (
-                    SELECT DISTINCT ON (m.athlete_code)
+                    SELECT
                         m.athlete_code,
                         m.current_best_rank_b,
                         m.best_curve_ranking_current,
@@ -224,9 +222,7 @@ def get_fastest_runs_by_athlete():
                         m.current_best_rank_ae,
                         m.current_best_rank_es,
                         m.current_best_rank_aes
-                    FROM mv_extend_runs m
-                    WHERE m.athlete_code IS NOT NULL AND BTRIM(m.athlete_code) <> ''
-                    ORDER BY m.athlete_code, m.event_dt DESC NULLS LAST, m.event_code DESC
+                    FROM mv_latest_curve_ranks m
                 )
                 SELECT
                     v.*, 
