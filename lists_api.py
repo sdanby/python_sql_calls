@@ -95,6 +95,17 @@ def get_fastest_runs_by_athlete():
         }
 
         view_sort_to_view = view_sort_to_view_last_year if period == 'last_year' else view_sort_to_view_all_time
+        current_rank_sql_by_view = {
+            'time_seconds': 'latest.current_best_rank_b',
+            'season_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'event_adj_time_seconds': 'latest.current_best_rank_e',
+            'age_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'sex_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'age_sex_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'age_event_adj_time_seconds': 'latest.current_best_rank_ae',
+            'sex_event_adj_time_seconds': 'latest.current_best_rank_es',
+            'age_sex_event_adj_time_seconds': 'latest.current_best_rank_aes',
+        }
         order_by_sql = {
             'time_seconds': 'v.time_seconds',
             'season_adj_time_seconds': 'v.season_adj_time_seconds',
@@ -151,6 +162,7 @@ def get_fastest_runs_by_athlete():
             limit = 10000
 
         selected_view = view_sort_to_view[view_sort]
+        selected_current_rank_sql = current_rank_sql_by_view.get(view_sort, 'NULL')
         selected_participant_filter = participant_filter_sql[participant_filter]
         selected_order_by = order_by_sql[sort]
         selected_view_order_by = view_order_by_sql[view_sort]
@@ -172,27 +184,60 @@ def get_fastest_runs_by_athlete():
                     WHERE {selected_participant_filter.replace('f.', 'f0.')}
                     ORDER BY {selected_view_order_by} ASC, v0.athlete_code
                     LIMIT :limit
+                ), latest_rank AS (
+                    SELECT DISTINCT ON (m.athlete_code)
+                        m.athlete_code,
+                        m.current_best_rank_b,
+                        m.best_curve_ranking_current,
+                        m.current_best_rank_e,
+                        m.current_best_rank_ae,
+                        m.current_best_rank_es,
+                        m.current_best_rank_aes
+                    FROM mv_extend_runs m
+                    WHERE m.athlete_code IS NOT NULL AND BTRIM(m.athlete_code) <> ''
+                    ORDER BY m.athlete_code, m.event_dt DESC NULLS LAST, m.event_code DESC
                 )
                 SELECT
                     v.*,
+                    CAST(v.rank AS numeric) AS ev_rank,
+                    CAST({selected_current_rank_sql} AS numeric) AS cur_rank,
                     f.total_runs_all_parkruns,
                     f.total_runs_local_parkruns,
                     f.total_runs_local_parkruns_1y
                 FROM eligible_athletes ea
                 JOIN {selected_view} v
                   ON v.athlete_code = ea.athlete_code
+                LEFT JOIN latest_rank latest
+                  ON latest.athlete_code = v.athlete_code
                 LEFT JOIN mv_participant_run_filters f
                   ON f.athlete_code = v.athlete_code
                 ORDER BY {selected_order_by} {direction.upper()}, v.athlete_code;
             """
         else:
             sql = f"""
+                WITH latest_rank AS (
+                    SELECT DISTINCT ON (m.athlete_code)
+                        m.athlete_code,
+                        m.current_best_rank_b,
+                        m.best_curve_ranking_current,
+                        m.current_best_rank_e,
+                        m.current_best_rank_ae,
+                        m.current_best_rank_es,
+                        m.current_best_rank_aes
+                    FROM mv_extend_runs m
+                    WHERE m.athlete_code IS NOT NULL AND BTRIM(m.athlete_code) <> ''
+                    ORDER BY m.athlete_code, m.event_dt DESC NULLS LAST, m.event_code DESC
+                )
                 SELECT
                     v.*, 
+                    CAST(v.rank AS numeric) AS ev_rank,
+                    CAST({selected_current_rank_sql} AS numeric) AS cur_rank,
                     f.total_runs_all_parkruns,
                     f.total_runs_local_parkruns,
                     f.total_runs_local_parkruns_1y
                 FROM {selected_view} v
+                LEFT JOIN latest_rank latest
+                  ON latest.athlete_code = v.athlete_code
                 LEFT JOIN mv_participant_run_filters f
                   ON f.athlete_code = v.athlete_code
                 WHERE {selected_participant_filter}
