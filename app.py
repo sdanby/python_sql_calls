@@ -2165,6 +2165,79 @@ def get_athlete_best_summary():
                                 COALESCE(a.recent_runs, 0) AS recent_runs
                             FROM athletes a
                         ),
+                        best_metric_candidates AS (
+                            SELECT athlete_code, 'B'::text AS metric_type, MIN(time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'E'::text AS metric_type, MIN(event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'AE'::text AS metric_type, MIN(age_event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'ES'::text AS metric_type, MIN(sex_event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'AES'::text AS metric_type, MIN(age_sex_event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows
+                            GROUP BY athlete_code
+                        ),
+                        latest_1y_snapshot AS (
+                            SELECT MAX(snapshot_date) AS snapshot_date
+                            FROM curve_rank_mapping_history
+                            WHERE period_type = '1Y'
+                        ),
+                        est_rank_candidates AS (
+                            SELECT
+                                b.athlete_code,
+                                b.metric_type,
+                                b.metric_seconds,
+                                cm.rank::numeric AS rank,
+                                CASE b.metric_type
+                                    WHEN 'B' THEN 1
+                                    WHEN 'E' THEN 2
+                                    WHEN 'AE' THEN 3
+                                    WHEN 'ES' THEN 4
+                                    WHEN 'AES' THEN 5
+                                    ELSE 99
+                                END AS metric_order
+                            FROM best_metric_candidates b
+                            LEFT JOIN LATERAL (
+                                SELECT c.rank, c.best_metric_seconds
+                                FROM curve_rank_mapping_history c
+                                JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+                                WHERE c.period_type = '1Y'
+                                  AND c.metric_type = b.metric_type
+                                  AND c.rank IS NOT NULL
+                                ORDER BY ABS(c.best_metric_seconds - b.metric_seconds) ASC, c.best_metric_seconds ASC
+                                LIMIT 1
+                            ) cm ON TRUE
+                        ),
+                        est_rank_best AS (
+                            SELECT
+                                athlete_code,
+                                metric_type,
+                                metric_seconds,
+                                rank,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY athlete_code
+                                    ORDER BY rank DESC NULLS LAST, metric_order ASC
+                                ) AS rn
+                            FROM est_rank_candidates
+                            WHERE rank IS NOT NULL
+                        ),
                         stacked AS (
                                                         SELECT athlete_code, 'best_all_time'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, time_seconds AS sort_seconds, event_dt
                             FROM athlete_curve_rows
@@ -2227,6 +2300,11 @@ def get_athlete_best_summary():
                             UNION ALL
                                                         SELECT tr.athlete_code, 'recent_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.recent_runs::text AS time, NULL::numeric AS sort_seconds, CURRENT_DATE::date AS event_dt
                             FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
+
+                            UNION ALL
+                                                        SELECT e.athlete_code, 'estimated_rank_1y'::text AS best_type, NULL::text AS event_date, e.rank, e.metric_type::text AS time, e.metric_seconds AS sort_seconds, NULL::date AS event_dt
+                            FROM est_rank_best e
+                            WHERE e.rn = 1
                         ),
                         picked AS (
                             SELECT *,
