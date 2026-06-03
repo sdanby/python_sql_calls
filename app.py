@@ -2108,6 +2108,66 @@ def get_athlete_best_summary():
                                 'required': ['athlete_code']
                         }), 400
 
+                history_table_exists = bool(
+                    db.session.execute(text("SELECT to_regclass('public.curve_rank_mapping_history') IS NOT NULL")).scalar()
+                )
+                summary_table_exists = bool(
+                    db.session.execute(text("SELECT to_regclass('public.curve_rank_range_summary') IS NOT NULL")).scalar()
+                )
+
+                if history_table_exists:
+                    latest_snapshot_sql = """
+                            SELECT MAX(snapshot_date) AS snapshot_date
+                            FROM curve_rank_mapping_history
+                            WHERE period_type = '1Y'
+                    """
+                    mapping_lateral_sql = """
+                                SELECT c.rank, c.best_metric_seconds AS mapped_seconds
+                                FROM curve_rank_mapping_history c
+                                JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+                                WHERE c.period_type = '1Y'
+                                    AND c.metric_type = b.metric_type
+                                    AND c.rank IS NOT NULL
+                                ORDER BY ABS(c.best_metric_seconds - b.metric_seconds) ASC, c.best_metric_seconds ASC
+                                LIMIT 1
+                    """
+                elif summary_table_exists:
+                    latest_snapshot_sql = """
+                            SELECT MAX(snapshot_date) AS snapshot_date
+                            FROM curve_rank_range_summary
+                            WHERE period_type = '1Y'
+                    """
+                    mapping_lateral_sql = """
+                                SELECT
+                                    c.rank,
+                                    COALESCE(
+                                        (c.min_best_metric_seconds + c.max_best_metric_seconds) / 2.0,
+                                        c.min_best_metric_seconds,
+                                        c.max_best_metric_seconds
+                                    ) AS mapped_seconds
+                                FROM curve_rank_range_summary c
+                                JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+                                WHERE c.period_type = '1Y'
+                                    AND c.metric_type = b.metric_type
+                                    AND c.rank IS NOT NULL
+                                ORDER BY
+                                    CASE
+                                    WHEN b.metric_seconds IS NULL THEN 1000000000.0
+                                    WHEN c.min_best_metric_seconds IS NOT NULL
+                                         AND b.metric_seconds < c.min_best_metric_seconds
+                                        THEN c.min_best_metric_seconds - b.metric_seconds
+                                    WHEN c.max_best_metric_seconds IS NOT NULL
+                                         AND b.metric_seconds > c.max_best_metric_seconds
+                                        THEN b.metric_seconds - c.max_best_metric_seconds
+                                    ELSE 0.0
+                                    END ASC,
+                                    c.rank DESC
+                                LIMIT 1
+                    """
+                else:
+                    latest_snapshot_sql = "SELECT NULL::date AS snapshot_date"
+                    mapping_lateral_sql = "SELECT NULL::numeric AS rank, NULL::double precision AS mapped_seconds WHERE FALSE"
+
                 sql = text(f"""
                         WITH
                         params AS (
@@ -2195,9 +2255,7 @@ def get_athlete_best_summary():
                             GROUP BY athlete_code
                         ),
                         latest_1y_snapshot AS (
-                            SELECT MAX(snapshot_date) AS snapshot_date
-                            FROM curve_rank_mapping_history
-                            WHERE period_type = '1Y'
+                            {latest_snapshot_sql}
                         ),
                         est_rank_candidates AS (
                             SELECT
@@ -2215,14 +2273,7 @@ def get_athlete_best_summary():
                                 END AS metric_order
                             FROM best_metric_candidates b
                             LEFT JOIN LATERAL (
-                                SELECT c.rank, c.best_metric_seconds
-                                FROM curve_rank_mapping_history c
-                                JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
-                                WHERE c.period_type = '1Y'
-                                  AND c.metric_type = b.metric_type
-                                  AND c.rank IS NOT NULL
-                                ORDER BY ABS(c.best_metric_seconds - b.metric_seconds) ASC, c.best_metric_seconds ASC
-                                LIMIT 1
+                                                                {mapping_lateral_sql}
                             ) cm ON TRUE
                         ),
                         est_rank_best AS (
