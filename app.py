@@ -1993,7 +1993,7 @@ def get_club_members():
             best_curve_ranking_current_type,
             total_runs_all_clubs
         FROM mv_club_members_cache
-        WHERE club_key = BTRIM(:club)
+        WHERE club_key = regexp_replace(LOWER(BTRIM(:club)), '\\s+ac$', '')
         ORDER BY club_runs_total DESC, name
         LIMIT :limit
     """)
