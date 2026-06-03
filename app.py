@@ -1967,32 +1967,230 @@ def get_club_members():
     if not club:
         return jsonify({'error': 'Missing required parameter: club'}), 400
 
-    sql = text("""
+    history_table_exists = bool(
+        db.session.execute(text("SELECT to_regclass('public.curve_rank_mapping_history') IS NOT NULL")).scalar()
+    )
+    summary_table_exists = bool(
+        db.session.execute(text("SELECT to_regclass('public.curve_rank_range_summary') IS NOT NULL")).scalar()
+    )
+
+    if history_table_exists:
+        latest_snapshot_sql = """
+            SELECT MAX(snapshot_date) AS snapshot_date
+            FROM curve_rank_mapping_history
+            WHERE period_type = '1Y'
+        """
+        mapping_lateral_sql = """
+            SELECT c.rank, c.best_metric_seconds AS mapped_seconds
+            FROM curve_rank_mapping_history c
+            JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+            WHERE c.period_type = '1Y'
+              AND c.metric_type = b.metric_type
+              AND c.rank IS NOT NULL
+            ORDER BY ABS(c.best_metric_seconds - b.metric_seconds) ASC, c.best_metric_seconds ASC
+            LIMIT 1
+        """
+    elif summary_table_exists:
+        latest_snapshot_sql = """
+            SELECT MAX(snapshot_date) AS snapshot_date
+            FROM curve_rank_range_summary
+            WHERE period_type = '1Y'
+        """
+        mapping_lateral_sql = """
+            SELECT
+                c.rank,
+                COALESCE(
+                    (c.min_best_metric_seconds + c.max_best_metric_seconds) / 2.0,
+                    c.min_best_metric_seconds,
+                    c.max_best_metric_seconds
+                ) AS mapped_seconds
+            FROM curve_rank_range_summary c
+            JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+            WHERE c.period_type = '1Y'
+              AND c.metric_type = b.metric_type
+              AND c.rank IS NOT NULL
+            ORDER BY
+                CASE
+                  WHEN b.metric_seconds IS NULL THEN 1000000000.0
+                  WHEN c.min_best_metric_seconds IS NOT NULL
+                       AND b.metric_seconds < c.min_best_metric_seconds
+                    THEN c.min_best_metric_seconds - b.metric_seconds
+                  WHEN c.max_best_metric_seconds IS NOT NULL
+                       AND b.metric_seconds > c.max_best_metric_seconds
+                    THEN b.metric_seconds - c.max_best_metric_seconds
+                  ELSE 0.0
+                END ASC,
+                c.rank DESC
+            LIMIT 1
+        """
+    else:
+        latest_snapshot_sql = "SELECT NULL::date AS snapshot_date"
+        mapping_lateral_sql = "SELECT NULL::numeric AS rank, NULL::double precision AS mapped_seconds WHERE FALSE"
+
+    sql = text(f"""
+        WITH club_members AS (
+            SELECT
+                athlete_code,
+                name,
+                club_key,
+                current_club,
+                latest_age_group,
+                club_runs_total,
+                club_runs_last_year,
+                first_club_run_date,
+                last_club_run_date,
+                fastest_time,
+                fastest_time_seconds,
+                best_event_adj_time,
+                best_event_adj_time_seconds,
+                best_age_event_adj_time,
+                best_age_event_adj_time_seconds,
+                best_age_sex_event_adj_time,
+                best_age_sex_event_adj_time_seconds,
+                best_curve_ranking_historic,
+                total_runs_all_clubs
+            FROM mv_club_members_cache
+            WHERE club_key = BTRIM(:club)
+        ),
+        athlete_curve_source AS (
+            SELECT
+                ep.athlete_code::text AS athlete_code,
+                ep.event_date::text AS event_date,
+                to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
+                ep.time::text AS time,
+                ep.current_best_rank_b,
+                ep.age_ratio_male,
+                ep.age_ratio_sex,
+                p.coeff,
+                p.coeff_event,
+                CASE
+                    WHEN ep.time IS NULL OR btrim(ep.time) = '' THEN NULL
+                    WHEN length(ep.time) - length(replace(ep.time, ':', '')) = 2 THEN
+                        CAST(substring(ep.time, 1, strpos(ep.time, ':') - 1) AS INTEGER) * 3600 +
+                        CAST(substring(ep.time, strpos(ep.time, ':') + 1, strpos(substring(ep.time, strpos(ep.time, ':') + 1), ':') - 1) AS INTEGER) * 60 +
+                        CAST(substring(ep.time, length(ep.time) - 1, 2) AS INTEGER)
+                    WHEN strpos(ep.time, ':') > 0 THEN
+                        CAST(substring(ep.time, 1, strpos(ep.time, ':') - 1) AS INTEGER) * 60 +
+                        CAST(substring(ep.time, strpos(ep.time, ':') + 1) AS INTEGER)
+                    ELSE NULL
+                END AS time_seconds
+            FROM eventpositions ep
+            LEFT JOIN parkrun_events p ON ep.event_code = p.event_code AND ep.event_date = p.event_date
+            JOIN club_members cm ON cm.athlete_code::text = ep.athlete_code::text
+        ),
+        athlete_curve_rows AS (
+            SELECT
+                athlete_code,
+                event_date,
+                event_dt,
+                time,
+                current_best_rank_b,
+                {get_adjustment_fields_sql()}
+            FROM athlete_curve_source
+            WHERE time_seconds IS NOT NULL
+        ),
+        athlete_curve_rows_1y AS (
+            SELECT *
+            FROM athlete_curve_rows
+            WHERE event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
+        ),
+        best_metric_candidates AS (
+            SELECT athlete_code, 'B'::text AS metric_type, MIN(time_seconds)::double precision AS metric_seconds
+            FROM athlete_curve_rows_1y
+            GROUP BY athlete_code
+
+            UNION ALL
+
+            SELECT athlete_code, 'E'::text AS metric_type, MIN(event_adj_time_seconds)::double precision AS metric_seconds
+            FROM athlete_curve_rows_1y
+            GROUP BY athlete_code
+
+            UNION ALL
+
+            SELECT athlete_code, 'AE'::text AS metric_type, MIN(age_event_adj_time_seconds)::double precision AS metric_seconds
+            FROM athlete_curve_rows_1y
+            GROUP BY athlete_code
+
+            UNION ALL
+
+            SELECT athlete_code, 'ES'::text AS metric_type, MIN(sex_event_adj_time_seconds)::double precision AS metric_seconds
+            FROM athlete_curve_rows_1y
+            GROUP BY athlete_code
+
+            UNION ALL
+
+            SELECT athlete_code, 'AES'::text AS metric_type, MIN(age_sex_event_adj_time_seconds)::double precision AS metric_seconds
+            FROM athlete_curve_rows_1y
+            GROUP BY athlete_code
+        ),
+        latest_1y_snapshot AS (
+            {latest_snapshot_sql}
+        ),
+        est_rank_candidates AS (
+            SELECT
+                b.athlete_code,
+                b.metric_type,
+                b.metric_seconds,
+                cm.rank::numeric AS rank,
+                CASE b.metric_type
+                    WHEN 'B' THEN 1
+                    WHEN 'E' THEN 2
+                    WHEN 'AE' THEN 3
+                    WHEN 'ES' THEN 4
+                    WHEN 'AES' THEN 5
+                    ELSE 99
+                END AS metric_order
+            FROM best_metric_candidates b
+            LEFT JOIN LATERAL (
+                {mapping_lateral_sql}
+            ) cm ON TRUE
+        ),
+        est_rank_best AS (
+            SELECT
+                athlete_code,
+                metric_type,
+                rank,
+                ROW_NUMBER() OVER (
+                    PARTITION BY athlete_code
+                    ORDER BY rank DESC NULLS LAST, metric_order ASC
+                ) AS rn
+            FROM est_rank_candidates
+            WHERE rank IS NOT NULL
+        ),
+        historic_rank AS (
+            SELECT
+                athlete_code,
+                MIN(current_best_rank_b)::numeric AS hist_rank
+            FROM athlete_curve_source
+            WHERE current_best_rank_b IS NOT NULL
+            GROUP BY athlete_code
+        )
         SELECT
-            athlete_code,
-            name,
-            club_key,
-            current_club,
-            latest_age_group,
-            club_runs_total,
-            club_runs_last_year,
-            first_club_run_date,
-            last_club_run_date,
-            fastest_time,
-            fastest_time_seconds,
-            best_event_adj_time,
-            best_event_adj_time_seconds,
-            best_age_event_adj_time,
-            best_age_event_adj_time_seconds,
-            best_age_sex_event_adj_time,
-            best_age_sex_event_adj_time_seconds,
-            best_curve_ranking_current,
-            best_curve_ranking_historic,
-            best_curve_ranking_current_type,
-            total_runs_all_clubs
-        FROM mv_club_members_cache
-        WHERE club_key = BTRIM(:club)
-        ORDER BY club_runs_total DESC, name
+            cm.athlete_code,
+            cm.name,
+            cm.club_key,
+            cm.current_club,
+            cm.latest_age_group,
+            cm.club_runs_total,
+            cm.club_runs_last_year,
+            cm.first_club_run_date,
+            cm.last_club_run_date,
+            cm.fastest_time,
+            cm.fastest_time_seconds,
+            cm.best_event_adj_time,
+            cm.best_event_adj_time_seconds,
+            cm.best_age_event_adj_time,
+            cm.best_age_event_adj_time_seconds,
+            cm.best_age_sex_event_adj_time,
+            cm.best_age_sex_event_adj_time_seconds,
+            est.rank AS best_curve_ranking_current,
+            COALESCE(hr.hist_rank, cm.best_curve_ranking_historic, est.rank) AS best_curve_ranking_historic,
+            est.metric_type AS best_curve_ranking_current_type,
+            cm.total_runs_all_clubs
+        FROM club_members cm
+        LEFT JOIN est_rank_best est ON est.athlete_code = cm.athlete_code::text AND est.rn = 1
+        LEFT JOIN historic_rank hr ON hr.athlete_code = cm.athlete_code::text
+        ORDER BY cm.club_runs_total DESC, cm.name
         LIMIT :limit
     """)
 
