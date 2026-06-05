@@ -846,6 +846,8 @@ def admin_activity_list():
 
     limit = request.args.get('limit', default=300, type=int)
     limit = max(20, min(limit, 1000))
+    since_raw = request.args.get('since', default='', type=str)
+    since_dt = _parse_dt(since_raw)
 
     sql = text("""
         WITH page_events AS (
@@ -902,11 +904,12 @@ def admin_activity_list():
             user_agent,
             ip_address
         FROM combined
+        WHERE (:since_dt IS NULL OR activity_at >= :since_dt)
         ORDER BY activity_at DESC NULLS LAST
         LIMIT :limit
     """)
 
-    rows = db.session.execute(sql, {'limit': limit}).mappings().all()
+    rows = db.session.execute(sql, {'limit': limit, 'since_dt': since_dt}).mappings().all()
     payload = []
     for row in rows:
         payload.append({
