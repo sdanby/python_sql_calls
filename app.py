@@ -225,6 +225,7 @@ class FeedbackRequest(db.Model):
     created_by_display_name = db.Column(db.String(255), nullable=True)
     created_by_email = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 with app.app_context():
@@ -256,6 +257,10 @@ with app.app_context():
         db.session.commit()
     if 'created_by_email' not in feedback_request_columns:
         db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN created_by_email VARCHAR(255)"))
+        db.session.commit()
+    if 'updated_at' not in feedback_request_columns:
+        db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN updated_at DATETIME"))
+        db.session.execute(text("UPDATE feedback_requests SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"))
         db.session.commit()
 
 
@@ -406,6 +411,7 @@ def _feedback_payload(row):
         'title': row.title,
         'details': row.details,
         'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
+        'lastUpdated': (row.updated_at or row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
         'status': (row.status or 'logged').lower(),
         'createdBy': _feedback_creator_label(row)
     }
@@ -450,7 +456,8 @@ def create_feedback_request():
         created_by_user_id=user.id,
         created_by_display_name=(user.display_name or '').strip() or None,
         created_by_email=user.email,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
     )
     db.session.add(row)
     db.session.commit()
@@ -471,7 +478,7 @@ def update_feedback_request(request_id):
     title = str(payload.get('title') or '').strip()
     details = str(payload.get('details') or '').strip()
     status_raw = str(payload.get('status') or 'updated').strip().lower()
-    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed'}
+    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed', 'deleted'}
 
     if request_type_raw not in ('error', 'suggestion'):
         return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
@@ -486,10 +493,16 @@ def update_feedback_request(request_id):
     if not row:
         return jsonify({'error': 'feedback request not found'}), 404
 
+    if status_raw == 'deleted':
+        db.session.delete(row)
+        db.session.commit()
+        return jsonify({'id': request_id, 'deleted': True}), 200
+
     row.request_type = request_type_raw
     row.title = title
     row.details = details
     row.status = status_raw
+    row.updated_at = datetime.utcnow()
     db.session.commit()
 
     return jsonify(_feedback_payload(row)), 200
