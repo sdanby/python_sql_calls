@@ -845,7 +845,7 @@ def admin_activity_list():
         return jsonify({'error': 'Forbidden'}), 403
 
     limit = request.args.get('limit', default=300, type=int)
-    limit = max(20, min(limit, 1000))
+    limit = max(20, min(limit, 5000))
     since_raw = request.args.get('since', default='', type=str)
     since_dt = _parse_dt(since_raw)
 
