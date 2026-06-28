@@ -109,6 +109,11 @@ class EventPosition(db.Model):
     best_curve_ranking_current= db.Column(db.Integer)
     best_curve_ranking_historic= db.Column(db.Integer)
     best_curve_ranking_current_type= db.Column(db.String)
+    event_rank_b = db.Column(db.Float)
+    event_rank_e = db.Column(db.Float)
+    event_rank_es = db.Column(db.Float)
+    event_rank_ae = db.Column(db.Float)
+    event_rank_aes = db.Column(db.Float)
 
 class ParkrunEvent(db.Model):
     __tablename__ = 'parkrun_events'
@@ -1075,7 +1080,12 @@ def get_event_positions():
 		'total_runs': r.get('total_runs'),
 		'best_curve_ranking_current': r.get('best_curve_ranking_current'),
 		'best_curve_ranking_historic': r.get('best_curve_ranking_historic'),
-		'best_curve_ranking_current_type': r.get('best_curve_ranking_current_type')
+        'best_curve_ranking_current_type': r.get('best_curve_ranking_current_type'),
+        'event_rank_b': r.get('event_rank_b'),
+        'event_rank_e': r.get('event_rank_e'),
+        'event_rank_es': r.get('event_rank_es'),
+        'event_rank_ae': r.get('event_rank_ae'),
+        'event_rank_aes': r.get('event_rank_aes')
     } for r in rows])
 
 @app.route('/api/eventpositions', methods=['DELETE'])
@@ -1908,7 +1918,12 @@ def get_athlete_runs():
 			p.last_position,
             ep.best_curve_ranking_current,
 		    ep.best_curve_ranking_historic,
-		    ep.best_curve_ranking_current_type
+		    ep.best_curve_ranking_current_type,
+            ep.event_rank_b,
+            ep.event_rank_e,
+            ep.event_rank_es,
+            ep.event_rank_ae,
+            ep.event_rank_aes
         FROM eventpositions ep
         JOIN athletes a ON a.athlete_code = ep.athlete_code
         LEFT JOIN events e ON e.event_code = ep.event_code
