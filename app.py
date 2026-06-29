@@ -1860,6 +1860,182 @@ def get_event_by_number():
         app.logger.exception("get_event_by_number error")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/curve-rank-reference', methods=['GET'])
+def get_curve_rank_reference():
+    rank_type = (request.args.get('rank_type') or 'B').strip().upper()
+    allowed_rank_types = {'B', 'E', 'ES', 'AE', 'AES'}
+    if rank_type not in allowed_rank_types:
+        rank_type = 'B'
+
+    requested_reference_version = (request.args.get('reference_version') or '').strip()
+
+    def _seconds_to_time_label(value):
+        if value is None:
+            return None
+        total_seconds = max(0, int(round(float(value))))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
+    def _load_reference_from_postgres_table():
+        table_exists = bool(
+            db.session.execute(text("SELECT to_regclass('public.curve_time_ranks_reference') IS NOT NULL")).scalar()
+        )
+        if not table_exists:
+            return None
+
+        latest_version_sql = text("""
+            SELECT MAX(curve_rank_reference_version) AS curve_rank_reference_version
+            FROM curve_time_ranks_reference
+            WHERE metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+        """)
+        latest_version = db.session.execute(latest_version_sql).scalar()
+        if latest_version is None:
+            return None
+
+        versions_sql = text("""
+            SELECT DISTINCT curve_rank_reference_version
+            FROM curve_time_ranks_reference
+            WHERE metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+            ORDER BY curve_rank_reference_version DESC
+        """)
+        version_rows = db.session.execute(versions_sql).fetchall()
+        available_versions = [row[0].isoformat() for row in version_rows if row[0] is not None]
+        selected_version = requested_reference_version if requested_reference_version in available_versions else latest_version.isoformat()
+
+        rows_sql = text("""
+            SELECT
+                curve_rank_group AS curved_rank_group,
+                curve_rank_reference_version,
+                min_seconds,
+                max_seconds,
+                min_time,
+                max_time,
+                actual_group_cnt,
+                score_lower,
+                score_upper
+            FROM curve_time_ranks_reference
+            WHERE metric_type = :rank_type
+              AND curve_rank_reference_version = CAST(:reference_version AS DATE)
+            ORDER BY curve_rank_group DESC
+        """)
+        result = db.session.execute(rows_sql, {
+            'rank_type': rank_type,
+            'reference_version': selected_version,
+        })
+
+        rows = []
+        for row in result.fetchall():
+            record = dict(row._mapping)
+            min_seconds = record.get('min_seconds')
+            max_seconds = record.get('max_seconds')
+            snapshot_date = record.get('curve_rank_reference_version')
+            rows.append({
+                'curved_rank_group': record.get('curved_rank_group'),
+                'curve_rank_reference_version': snapshot_date.isoformat() if snapshot_date is not None else selected_version,
+                'min_seconds': min_seconds,
+                'max_seconds': max_seconds,
+                'min_time': record.get('min_time') or _seconds_to_time_label(min_seconds),
+                'max_time': record.get('max_time') or _seconds_to_time_label(max_seconds),
+                'score_lower': record.get('score_lower'),
+                'score_upper': record.get('score_upper'),
+                'actual_group_cnt': record.get('actual_group_cnt'),
+            })
+
+        return {
+            'rank_type': rank_type,
+            'curve_rank_reference_version': selected_version,
+            'latest_curve_rank_reference_version': latest_version.isoformat(),
+            'available_curve_rank_reference_versions': available_versions,
+            'rows': rows
+        }
+
+    postgres_reference_payload = _load_reference_from_postgres_table()
+    if postgres_reference_payload is not None:
+        return jsonify(postgres_reference_payload), 200
+
+    latest_version_sql = text("""
+        SELECT MAX(snapshot_date) AS snapshot_date
+        FROM curve_rank_range_summary
+        WHERE period_type = 'ALL'
+          AND metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+    """)
+    latest_version = db.session.execute(latest_version_sql).scalar()
+    if latest_version is None:
+        return jsonify({
+            'rank_type': rank_type,
+            'curve_rank_reference_version': None,
+            'latest_curve_rank_reference_version': None,
+            'available_curve_rank_reference_versions': [],
+            'rows': []
+        }), 200
+
+    versions_sql = text("""
+        SELECT DISTINCT snapshot_date
+        FROM curve_rank_range_summary
+        WHERE period_type = 'ALL'
+          AND metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+        ORDER BY snapshot_date DESC
+    """)
+    version_rows = db.session.execute(versions_sql).fetchall()
+    available_versions = [row[0].isoformat() for row in version_rows if row[0] is not None]
+    selected_version = requested_reference_version if requested_reference_version in available_versions else latest_version.isoformat()
+
+    rows_sql = text("""
+        SELECT
+            rank AS curved_rank_group,
+            CAST(ROUND(min_best_metric_seconds) AS INTEGER) AS min_seconds,
+            CAST(ROUND(max_best_metric_seconds) AS INTEGER) AS max_seconds,
+            source_rows AS actual_group_cnt,
+            CASE
+                WHEN rank = 100 THEN 100.0
+                ELSE rank + 0.5
+            END AS score_upper,
+            CASE
+                WHEN rank = 0 THEN 0.0
+                ELSE rank - 0.5
+            END AS score_lower,
+            snapshot_date
+        FROM curve_rank_range_summary
+        WHERE period_type = 'ALL'
+          AND metric_type = :rank_type
+          AND snapshot_date = CAST(:reference_version AS DATE)
+        ORDER BY rank DESC
+    """)
+    result = db.session.execute(rows_sql, {
+        'rank_type': rank_type,
+        'reference_version': selected_version,
+    })
+
+    rows = []
+    for row in result.fetchall():
+        record = dict(row._mapping)
+        min_seconds = record.get('min_seconds')
+        max_seconds = record.get('max_seconds')
+        snapshot_date = record.get('snapshot_date')
+        rows.append({
+            'curved_rank_group': record.get('curved_rank_group'),
+            'curve_rank_reference_version': snapshot_date.isoformat() if snapshot_date is not None else selected_version,
+            'min_seconds': min_seconds,
+            'max_seconds': max_seconds,
+            'min_time': _seconds_to_time_label(min_seconds),
+            'max_time': _seconds_to_time_label(max_seconds),
+            'score_lower': record.get('score_lower'),
+            'score_upper': record.get('score_upper'),
+            'actual_group_cnt': record.get('actual_group_cnt'),
+        })
+
+    return jsonify({
+        'rank_type': rank_type,
+        'curve_rank_reference_version': selected_version,
+        'latest_curve_rank_reference_version': latest_version.isoformat(),
+        'available_curve_rank_reference_versions': available_versions,
+        'rows': rows
+    }), 200
+
 @app.route('/api/athlete_runs', methods=['GET'])
 def get_athlete_runs():
     athlete_code = request.args.get('athlete_code', type=str)
