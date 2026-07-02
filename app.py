@@ -2539,6 +2539,7 @@ def get_athlete_best_summary():
                                 metric_type,
                                 event_date,
                                 event_dt,
+                                carried_rank,
                                 time,
                                 sort_seconds,
                                 metric_seconds,
@@ -2553,17 +2554,13 @@ def get_athlete_best_summary():
                                 p.athlete_code,
                                 p.best_type,
                                 p.event_date,
-                                e.rank,
+                                                                p.carried_rank AS rank,
                                 p.time,
                                 p.sort_seconds,
                                 p.event_dt
                             FROM picked_1y_metric_rows p
-                            JOIN est_rank_candidates e
-                              ON e.athlete_code = p.athlete_code
-                             AND e.metric_type = p.metric_type
-                             AND e.metric_seconds = p.metric_seconds
                             WHERE p.rn = 1
-                              AND e.rank IS NOT NULL
+                                                            AND p.carried_rank IS NOT NULL
                         ),
                         stacked AS (
                                                         SELECT athlete_code, 'best_all_time'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, time_seconds AS sort_seconds, event_dt
