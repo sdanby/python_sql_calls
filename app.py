@@ -2504,31 +2504,31 @@ def get_athlete_best_summary():
                             WHERE rank IS NOT NULL
                         ),
                         best_1y_metric_rows AS (
-                            SELECT athlete_code, 'best_1y'::text AS best_type, 'B'::text AS metric_type, event_date, event_dt, current_best_rank_b AS carried_rank, time::text AS time, time_seconds::double precision AS sort_seconds, time_seconds::double precision AS metric_seconds
+                            SELECT athlete_code, 'best_1y'::text AS best_type, 'B'::text AS metric_type, event_date, event_dt, event_rank_b AS carried_rank, time::text AS time, time_seconds::double precision AS sort_seconds, time_seconds::double precision AS metric_seconds
                             FROM athlete_curve_rows_1y
                             WHERE time_seconds IS NOT NULL
 
                             UNION ALL
 
-                            SELECT athlete_code, 'event_1y'::text AS best_type, 'E'::text AS metric_type, event_date, event_dt, current_best_rank_e AS carried_rank, event_adj_time::text AS time, event_adj_time_seconds::double precision AS sort_seconds, event_adj_time_seconds::double precision AS metric_seconds
+                            SELECT athlete_code, 'event_1y'::text AS best_type, 'E'::text AS metric_type, event_date, event_dt, event_rank_e AS carried_rank, event_adj_time::text AS time, event_adj_time_seconds::double precision AS sort_seconds, event_adj_time_seconds::double precision AS metric_seconds
                             FROM athlete_curve_rows_1y
                             WHERE event_adj_time_seconds IS NOT NULL
 
                             UNION ALL
 
-                            SELECT athlete_code, 'age_event_1y'::text AS best_type, 'AE'::text AS metric_type, event_date, event_dt, current_best_rank_ae AS carried_rank, age_event_adj_time::text AS time, age_event_adj_time_seconds::double precision AS sort_seconds, age_event_adj_time_seconds::double precision AS metric_seconds
+                            SELECT athlete_code, 'age_event_1y'::text AS best_type, 'AE'::text AS metric_type, event_date, event_dt, event_rank_ae AS carried_rank, age_event_adj_time::text AS time, age_event_adj_time_seconds::double precision AS sort_seconds, age_event_adj_time_seconds::double precision AS metric_seconds
                             FROM athlete_curve_rows_1y
                             WHERE age_event_adj_time_seconds IS NOT NULL
 
                             UNION ALL
 
-                            SELECT athlete_code, 'sex_event_1y'::text AS best_type, 'ES'::text AS metric_type, event_date, event_dt, current_best_rank_es AS carried_rank, sex_event_adj_time::text AS time, sex_event_adj_time_seconds::double precision AS sort_seconds, sex_event_adj_time_seconds::double precision AS metric_seconds
+                            SELECT athlete_code, 'sex_event_1y'::text AS best_type, 'ES'::text AS metric_type, event_date, event_dt, event_rank_es AS carried_rank, sex_event_adj_time::text AS time, sex_event_adj_time_seconds::double precision AS sort_seconds, sex_event_adj_time_seconds::double precision AS metric_seconds
                             FROM athlete_curve_rows_1y
                             WHERE sex_event_adj_time_seconds IS NOT NULL
 
                             UNION ALL
 
-                            SELECT athlete_code, 'age_sex_event_1y'::text AS best_type, 'AES'::text AS metric_type, event_date, event_dt, current_best_rank_aes AS carried_rank, age_sex_event_adj_time::text AS time, age_sex_event_adj_time_seconds::double precision AS sort_seconds, age_sex_event_adj_time_seconds::double precision AS metric_seconds
+                            SELECT athlete_code, 'age_sex_event_1y'::text AS best_type, 'AES'::text AS metric_type, event_date, event_dt, event_rank_aes AS carried_rank, age_sex_event_adj_time::text AS time, age_sex_event_adj_time_seconds::double precision AS sort_seconds, age_sex_event_adj_time_seconds::double precision AS metric_seconds
                             FROM athlete_curve_rows_1y
                             WHERE age_sex_event_adj_time_seconds IS NOT NULL
                         ),
