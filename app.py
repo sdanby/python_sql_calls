@@ -230,6 +230,17 @@ class FeedbackRequest(db.Model):
     created_by_display_name = db.Column(db.String(255), nullable=True)
     created_by_email = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ChatMessage(db.Model):
+    __tablename__ = 'chat_messages'
+    id = db.Column(db.Integer, primary_key=True)
+    created_by_user_id = db.Column(db.Integer, nullable=True, index=True)
+    created_by_display_name = db.Column(db.String(255), nullable=True)
+    created_by_email = db.Column(db.String(255), nullable=True)
+    athlete_code = db.Column(db.String(32), nullable=True)
+    message_text = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
@@ -239,6 +250,7 @@ with app.app_context():
     AuthLoginEvent.__table__.create(bind=db.engine, checkfirst=True)
     PageUsageEvent.__table__.create(bind=db.engine, checkfirst=True)
     FeedbackRequest.__table__.create(bind=db.engine, checkfirst=True)
+    ChatMessage.__table__.create(bind=db.engine, checkfirst=True)
     inspector = inspect(db.engine)
     auth_user_columns = {column['name'] for column in inspector.get_columns('auth_users')}
     if 'athlete_code' not in auth_user_columns:
@@ -422,6 +434,29 @@ def _feedback_payload(row):
     }
 
 
+def _chat_creator_label(row):
+    display_name = str(row.created_by_display_name or '').strip()
+    if display_name:
+        return display_name
+    email = str(row.created_by_email or '').strip()
+    if email:
+        return email
+    athlete_code = str(row.athlete_code or '').strip()
+    if athlete_code:
+        return athlete_code
+    return 'Unknown'
+
+
+def _chat_message_payload(row):
+    return {
+        'id': row.id,
+        'messageText': row.message_text,
+        'createdAt': row.created_at.isoformat() if row.created_at else None,
+        'createdBy': _chat_creator_label(row),
+        'athleteCode': str(row.athlete_code or '').strip() or None,
+    }
+
+
 @app.route('/api/feedback-requests', methods=['GET'])
 def get_feedback_requests():
     _sess, user = _require_authenticated_user()
@@ -511,6 +546,50 @@ def update_feedback_request(request_id):
     db.session.commit()
 
     return jsonify(_feedback_payload(row)), 200
+
+
+@app.route('/api/chat/messages', methods=['GET'])
+def get_chat_messages():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    limit_raw = request.args.get('limit', 200)
+    try:
+        limit = max(1, min(int(limit_raw), 500))
+    except Exception:
+        limit = 200
+
+    rows = ChatMessage.query.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit).all()
+    payload = [_chat_message_payload(row) for row in reversed(rows)]
+    return jsonify(payload), 200
+
+
+@app.route('/api/chat/messages', methods=['POST'])
+def create_chat_message():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    payload = request.get_json(silent=True) or {}
+    message_text = str(payload.get('messageText') or '').strip()
+    if not message_text:
+        return jsonify({'error': 'messageText is required'}), 400
+    if len(message_text) > 2000:
+        return jsonify({'error': 'messageText is too long'}), 400
+
+    row = ChatMessage(
+        created_by_user_id=user.id,
+        created_by_display_name=(user.display_name or '').strip() or None,
+        created_by_email=user.email,
+        athlete_code=(user.athlete_code or '').strip() or None,
+        message_text=message_text,
+        created_at=datetime.utcnow()
+    )
+    db.session.add(row)
+    db.session.commit()
+
+    return jsonify(_chat_message_payload(row)), 201
 
 
 def _format_db_datetime(value):
