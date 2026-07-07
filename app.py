@@ -230,6 +230,7 @@ class FeedbackRequest(db.Model):
     created_by_display_name = db.Column(db.String(255), nullable=True)
     created_by_email = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 class ChatMessage(db.Model):
@@ -274,6 +275,10 @@ with app.app_context():
         db.session.commit()
     if 'created_by_email' not in feedback_request_columns:
         db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN created_by_email VARCHAR(255)"))
+        db.session.commit()
+    if 'updated_at' not in feedback_request_columns:
+        db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN updated_at DATETIME"))
+        db.session.execute(text("UPDATE feedback_requests SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"))
         db.session.commit()
     if 'updated_at' not in feedback_request_columns:
         db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN updated_at DATETIME"))
