@@ -2811,6 +2811,15 @@ def get_next_ext_similar():
                 FROM favorite_course_ranked
                 WHERE favorite_rn = 1
             ),
+            course_matched_athletes AS (
+                SELECT DISTINCT
+                    m.athlete_code::text AS athlete_code
+                FROM mv_extend_runs m
+                JOIN candidate_athletes ca
+                  ON ca.athlete_code = m.athlete_code::text
+                WHERE m.event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
+                  AND m.event_code::text = ANY(string_to_array(:course_code_filter_csv, ','))
+            ),
             best_course_ranked AS (
                 SELECT
                     ca.athlete_code,
@@ -2848,11 +2857,12 @@ def get_next_ext_similar():
                         ORDER BY ca.metric_seconds ASC, ca.exact_rank DESC, LOWER(ca.athlete_name) ASC, ca.athlete_code ASC
                     ) AS peer_rn
                 FROM candidate_athletes ca
+                                JOIN course_matched_athletes cma
+                                    ON cma.athlete_code = ca.athlete_code
                 LEFT JOIN favorite_course
                   ON favorite_course.athlete_code = ca.athlete_code
                 LEFT JOIN best_course
                   ON best_course.athlete_code = ca.athlete_code
-                WHERE favorite_course.freq_course_code = ANY(string_to_array(:course_code_filter_csv, ','))
             ),
             selected_position AS (
                 SELECT peer_rn AS selected_peer_rn
