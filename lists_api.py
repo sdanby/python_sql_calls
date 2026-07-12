@@ -106,6 +106,17 @@ def get_fastest_runs_by_athlete():
             'sex_event_adj_time_seconds': 'latest.current_best_rank_es',
             'age_sex_event_adj_time_seconds': 'latest.current_best_rank_aes',
         }
+        current_rank_sql_by_view_last_year = {
+            'time_seconds': 'COALESCE(v.period_best_rank, latest.current_best_rank_b)',
+            'season_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'event_adj_time_seconds': 'COALESCE(v.period_best_rank, latest.current_best_rank_e)',
+            'age_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'sex_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'age_sex_adj_time_seconds': 'latest.best_curve_ranking_current',
+            'age_event_adj_time_seconds': 'COALESCE(v.period_best_rank, latest.current_best_rank_ae)',
+            'sex_event_adj_time_seconds': 'COALESCE(v.period_best_rank, latest.current_best_rank_es)',
+            'age_sex_event_adj_time_seconds': 'COALESCE(v.period_best_rank, latest.current_best_rank_aes)',
+        }
         order_by_sql = {
             'time_seconds': 'v.time_seconds',
             'season_adj_time_seconds': 'v.season_adj_time_seconds',
@@ -162,7 +173,9 @@ def get_fastest_runs_by_athlete():
             limit = 10000
 
         selected_view = view_sort_to_view[view_sort]
-        selected_current_rank_sql = current_rank_sql_by_view.get(view_sort, 'NULL')
+        selected_historic_view = view_sort_to_view_all_time[view_sort]
+        selected_current_rank_sql = (current_rank_sql_by_view_last_year if period == 'last_year' else current_rank_sql_by_view).get(view_sort, 'NULL')
+        selected_historic_rank_sql = 'COALESCE(hist.rank, v.rank)' if period == 'last_year' else 'v.rank'
         selected_participant_filter = participant_filter_sql[participant_filter]
         selected_order_by = order_by_sql[sort]
         selected_view_order_by = view_order_by_sql[view_sort]
@@ -197,7 +210,7 @@ def get_fastest_runs_by_athlete():
                 )
                 SELECT
                     v.*,
-                    CAST(v.rank AS numeric) AS ev_rank,
+                                        CAST({selected_historic_rank_sql} AS numeric) AS ev_rank,
                     CAST({selected_current_rank_sql} AS numeric) AS cur_rank,
                     f.total_runs_all_parkruns,
                     f.total_runs_local_parkruns,
@@ -205,6 +218,8 @@ def get_fastest_runs_by_athlete():
                 FROM eligible_athletes ea
                 JOIN {selected_view} v
                   ON v.athlete_code = ea.athlete_code
+                                LEFT JOIN {selected_historic_view} hist
+                                    ON hist.athlete_code = v.athlete_code
                 LEFT JOIN latest_rank latest
                   ON latest.athlete_code = v.athlete_code
                 LEFT JOIN mv_participant_run_filters f
@@ -226,12 +241,14 @@ def get_fastest_runs_by_athlete():
                 )
                 SELECT
                     v.*, 
-                    CAST(v.rank AS numeric) AS ev_rank,
+                                        CAST({selected_historic_rank_sql} AS numeric) AS ev_rank,
                     CAST({selected_current_rank_sql} AS numeric) AS cur_rank,
                     f.total_runs_all_parkruns,
                     f.total_runs_local_parkruns,
                     f.total_runs_local_parkruns_1y
                 FROM {selected_view} v
+                                LEFT JOIN {selected_historic_view} hist
+                                    ON hist.athlete_code = v.athlete_code
                 LEFT JOIN latest_rank latest
                   ON latest.athlete_code = v.athlete_code
                 LEFT JOIN mv_participant_run_filters f
