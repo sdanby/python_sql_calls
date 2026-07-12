@@ -2770,7 +2770,8 @@ def get_next_ext_similar():
         mv_count = db.session.execute(mv_exists_sql, {'mv_names': mv_names}).scalar() or 0
         use_mv_fast_path = mv_count == len(mv_names)
 
-        common_peer_tail = """
+        if has_course_filter:
+                common_peer_tail = """
             ,
             candidate_athletes AS (
                 SELECT
@@ -2847,8 +2848,7 @@ def get_next_ext_similar():
                   ON favorite_course.athlete_code = ca.athlete_code
                 LEFT JOIN best_course
                   ON best_course.athlete_code = ca.athlete_code
-                     WHERE :has_course_filter = false
-                         OR favorite_course.freq_course_code = ANY(string_to_array(:course_code_filter_csv, ','))
+                WHERE favorite_course.freq_course_code = ANY(string_to_array(:course_code_filter_csv, ','))
             ),
             selected_position AS (
                 SELECT peer_rn AS selected_peer_rn
@@ -2882,6 +2882,119 @@ def get_next_ext_similar():
             WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
                                         AND selected_position.selected_peer_rn + :below_count
             ORDER BY peer_pool.peer_rn
+        """
+        else:
+                common_peer_tail = """
+            ,
+            candidate_athletes AS (
+                SELECT
+                    best_rows.*
+                FROM best_rows
+            ),
+            peer_pool AS (
+                SELECT
+                    ca.*,
+                    ROW_NUMBER() OVER (
+                        ORDER BY ca.metric_seconds ASC, ca.exact_rank DESC, LOWER(ca.athlete_name) ASC, ca.athlete_code ASC
+                    ) AS peer_rn
+                FROM candidate_athletes ca
+            ),
+            selected_position AS (
+                SELECT peer_rn AS selected_peer_rn
+                FROM peer_pool
+                WHERE athlete_code = :athlete_code
+            ),
+            windowed_peers AS (
+                SELECT
+                    peer_pool.*
+                FROM peer_pool
+                CROSS JOIN selected_position
+                WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
+                                            AND selected_position.selected_peer_rn + :below_count
+            ),
+            favorite_course_ranked AS (
+                SELECT
+                    ep.athlete_code::text AS athlete_code,
+                    ep.event_code::text AS freq_course_code,
+                    COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) AS freq_course,
+                    COALESCE(ep.last_event_code_count_long, 0)::numeric AS freq_course_count,
+                    to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ep.athlete_code
+                        ORDER BY COALESCE(ep.last_event_code_count_long, 0) DESC,
+                                 to_date(ep.event_date, 'DD/MM/YYYY') DESC,
+                                 COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) ASC
+                    ) AS favorite_rn
+                FROM eventpositions ep
+                JOIN windowed_peers wp
+                  ON wp.athlete_code = ep.athlete_code::text
+                LEFT JOIN events ev
+                  ON ev.event_code = ep.event_code
+                WHERE to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+            ),
+            favorite_course AS (
+                SELECT
+                    athlete_code,
+                    freq_course_code,
+                    freq_course,
+                    freq_course_count
+                FROM favorite_course_ranked
+                WHERE favorite_rn = 1
+            ),
+            best_course_ranked AS (
+                SELECT
+                    wp.athlete_code,
+                    ep.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) AS best_course,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY wp.athlete_code
+                        ORDER BY to_date(ep.event_date, 'DD/MM/YYYY') DESC,
+                                 COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) ASC
+                    ) AS best_course_rn
+                FROM windowed_peers wp
+                LEFT JOIN eventpositions ep
+                  ON ep.athlete_code::text = wp.athlete_code
+                 AND to_date(ep.event_date, 'DD/MM/YYYY') = wp.event_dt
+                LEFT JOIN events ev
+                  ON ev.event_code = ep.event_code
+            ),
+            best_course AS (
+                SELECT
+                    athlete_code,
+                    best_course_code,
+                    best_course
+                FROM best_course_ranked
+                WHERE best_course_rn = 1
+            )
+            SELECT
+                wp.athlete_code,
+                wp.athlete_name,
+                wp.club,
+                wp.age_group,
+                wp.age_grade,
+                TO_CHAR(wp.event_dt, 'DDMonYY') AS event_date,
+                wp.rank_metric,
+                wp.rank_suffix,
+                wp.display_rank AS rank_score,
+                ROUND(wp.exact_rank::numeric, 1) AS exact_rank,
+                wp.rank_display,
+                ROUND(wp.metric_seconds)::int AS best_time_seconds,
+                ROUND(wp.actual_time_seconds)::int AS actual_time_seconds,
+                best_course.best_course_code,
+                COALESCE(best_course.best_course, '--') AS best_course,
+                COALESCE(favorite_course.freq_course_count, 0)::int AS local_runs_1y,
+                favorite_course.freq_course_code,
+                COALESCE(favorite_course.freq_course, '--') AS freq_course,
+                wp.peer_rn,
+                selected_position.selected_peer_rn,
+                (wp.athlete_code = :athlete_code) AS is_selected
+            FROM windowed_peers wp
+            LEFT JOIN favorite_course
+              ON favorite_course.athlete_code = wp.athlete_code
+            LEFT JOIN best_course
+              ON best_course.athlete_code = wp.athlete_code
+            CROSS JOIN selected_position
+            ORDER BY wp.peer_rn
         """
 
         if use_mv_fast_path:
