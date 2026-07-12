@@ -2778,25 +2778,29 @@ def get_next_ext_similar():
                     best_rows.*
                 FROM best_rows
             ),
+            favorite_course_counts AS (
+                SELECT
+                    m.athlete_code::text AS athlete_code,
+                    m.event_code::text AS freq_course_code,
+                    COALESCE(NULLIF(BTRIM(m.event_name), ''), m.event_code::text) AS freq_course,
+                    COUNT(*)::int AS freq_course_count,
+                    MAX(m.event_dt) AS event_dt
+                FROM mv_extend_runs m
+                JOIN candidate_athletes ca
+                  ON ca.athlete_code = m.athlete_code::text
+                WHERE m.event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
+                GROUP BY m.athlete_code, m.event_code, COALESCE(NULLIF(BTRIM(m.event_name), ''), m.event_code::text)
+            ),
             favorite_course_ranked AS (
                 SELECT
-                    ep.athlete_code::text AS athlete_code,
-                    ep.event_code::text AS freq_course_code,
-                    COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) AS freq_course,
-                    COALESCE(ep.last_event_code_count_long, 0)::numeric AS freq_course_count,
-                    to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
+                    favorite_course_counts.*,
                     ROW_NUMBER() OVER (
-                        PARTITION BY ep.athlete_code
-                        ORDER BY COALESCE(ep.last_event_code_count_long, 0) DESC,
-                                 to_date(ep.event_date, 'DD/MM/YYYY') DESC,
-                                 COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) ASC
+                        PARTITION BY athlete_code
+                        ORDER BY freq_course_count DESC,
+                                 event_dt DESC,
+                                 freq_course ASC
                     ) AS favorite_rn
-                FROM eventpositions ep
-                JOIN candidate_athletes ca
-                  ON ca.athlete_code = ep.athlete_code::text
-                LEFT JOIN events ev
-                  ON ev.event_code = ep.event_code
-                WHERE to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                FROM favorite_course_counts
             ),
             favorite_course AS (
                 SELECT
@@ -2912,25 +2916,29 @@ def get_next_ext_similar():
                 WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
                                             AND selected_position.selected_peer_rn + :below_count
             ),
+            favorite_course_counts AS (
+                SELECT
+                    m.athlete_code::text AS athlete_code,
+                    m.event_code::text AS freq_course_code,
+                    COALESCE(NULLIF(BTRIM(m.event_name), ''), m.event_code::text) AS freq_course,
+                    COUNT(*)::int AS freq_course_count,
+                    MAX(m.event_dt) AS event_dt
+                FROM mv_extend_runs m
+                JOIN windowed_peers wp
+                  ON wp.athlete_code = m.athlete_code::text
+                WHERE m.event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
+                GROUP BY m.athlete_code, m.event_code, COALESCE(NULLIF(BTRIM(m.event_name), ''), m.event_code::text)
+            ),
             favorite_course_ranked AS (
                 SELECT
-                    ep.athlete_code::text AS athlete_code,
-                    ep.event_code::text AS freq_course_code,
-                    COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) AS freq_course,
-                    COALESCE(ep.last_event_code_count_long, 0)::numeric AS freq_course_count,
-                    to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
+                    favorite_course_counts.*,
                     ROW_NUMBER() OVER (
-                        PARTITION BY ep.athlete_code
-                        ORDER BY COALESCE(ep.last_event_code_count_long, 0) DESC,
-                                 to_date(ep.event_date, 'DD/MM/YYYY') DESC,
-                                 COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) ASC
+                        PARTITION BY athlete_code
+                        ORDER BY freq_course_count DESC,
+                                 event_dt DESC,
+                                 freq_course ASC
                     ) AS favorite_rn
-                FROM eventpositions ep
-                JOIN windowed_peers wp
-                  ON wp.athlete_code = ep.athlete_code::text
-                LEFT JOIN events ev
-                  ON ev.event_code = ep.event_code
-                WHERE to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+                FROM favorite_course_counts
             ),
             favorite_course AS (
                 SELECT
