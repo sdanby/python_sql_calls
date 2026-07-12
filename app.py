@@ -2737,5 +2737,251 @@ def get_athlete_best_summary():
                         "traceback": tb
                 }), 500
 
+@app.route('/api/next_ext_similar', methods=['GET'])
+def get_next_ext_similar():
+        athlete_code = request.args.get('athlete_code', type=str)
+        if not athlete_code:
+                return jsonify({'error': 'athlete_code is required'}), 400
+
+        above_count = request.args.get('above', default=10, type=int)
+        below_count = request.args.get('below', default=10, type=int)
+        above_count = max(0, min(50, above_count if above_count is not None else 10))
+        below_count = max(0, min(50, below_count if below_count is not None else 10))
+
+        sql = text("""
+            WITH athlete_curve_rows_1y AS (
+                SELECT
+                    ep.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(ep.name), ''), NULLIF(BTRIM(a.name), ''), ep.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(ep.club), ''), NULLIF(BTRIM(a.club), ''), '') AS club,
+                    ep.event_date::date AS event_dt,
+                    NULLIF(BTRIM(ep.age_group), '') AS age_group,
+                    NULLIF(BTRIM(ep.age_grade::text), '') AS age_grade,
+                    time_to_seconds(ep.time)::numeric AS raw_seconds,
+                    ep.event_rank_b::numeric AS rank_b,
+                    ep.event_rank_e::numeric AS rank_e,
+                    ep.event_rank_ae::numeric AS rank_ae,
+                    ep.event_rank_es::numeric AS rank_es,
+                    ep.event_rank_aes::numeric AS rank_aes,
+                    NULLIF((COALESCE(pe.coeff, 1)::numeric + COALESCE(pe.coeff_event, 1)::numeric - 1), 0) AS coeff_product,
+                    NULLIF(ep.age_ratio_male::numeric, 0) AS age_ratio_male,
+                    NULLIF(ep.age_ratio_sex::numeric, 0) AS age_ratio_sex
+                FROM eventpositions ep
+                JOIN athletes a
+                  ON a.athlete_code = ep.athlete_code
+                LEFT JOIN parkrun_events pe
+                  ON pe.event_code = ep.event_code
+                 AND pe.event_date = ep.event_date
+                WHERE ep.event_date::date >= CURRENT_DATE - INTERVAL '1 year'
+            ),
+            metric_rows AS (
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    'B'::text AS rank_metric,
+                    '*'::text AS rank_suffix,
+                    1 AS metric_order,
+                    rank_b AS exact_rank,
+                    ROUND(rank_b)::int AS display_rank,
+                    raw_seconds AS metric_seconds
+                FROM athlete_curve_rows_1y
+                WHERE rank_b IS NOT NULL
+                  AND raw_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    'E'::text AS rank_metric,
+                    'E'::text AS rank_suffix,
+                    2 AS metric_order,
+                    rank_e AS exact_rank,
+                    ROUND(rank_e)::int AS display_rank,
+                    CASE
+                        WHEN coeff_product IS NULL THEN NULL
+                        ELSE raw_seconds / coeff_product
+                    END AS metric_seconds
+                FROM athlete_curve_rows_1y
+                WHERE rank_e IS NOT NULL
+                  AND raw_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    'AE'::text AS rank_metric,
+                    'AE'::text AS rank_suffix,
+                    3 AS metric_order,
+                    rank_ae AS exact_rank,
+                    ROUND(rank_ae)::int AS display_rank,
+                    CASE
+                        WHEN coeff_product IS NULL OR age_ratio_male IS NULL THEN NULL
+                        ELSE raw_seconds / (coeff_product * age_ratio_male)
+                    END AS metric_seconds
+                FROM athlete_curve_rows_1y
+                WHERE rank_ae IS NOT NULL
+                  AND raw_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    'ES'::text AS rank_metric,
+                    'ES'::text AS rank_suffix,
+                    4 AS metric_order,
+                    rank_es AS exact_rank,
+                    ROUND(rank_es)::int AS display_rank,
+                    CASE
+                        WHEN coeff_product IS NULL OR age_ratio_male IS NULL OR age_ratio_sex IS NULL THEN NULL
+                        ELSE raw_seconds / (coeff_product * (age_ratio_sex / age_ratio_male))
+                    END AS metric_seconds
+                FROM athlete_curve_rows_1y
+                WHERE rank_es IS NOT NULL
+                  AND raw_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    'AES'::text AS rank_metric,
+                    'AES'::text AS rank_suffix,
+                    5 AS metric_order,
+                    rank_aes AS exact_rank,
+                    ROUND(rank_aes)::int AS display_rank,
+                    CASE
+                        WHEN coeff_product IS NULL OR age_ratio_sex IS NULL THEN NULL
+                        ELSE raw_seconds / (coeff_product * age_ratio_sex)
+                    END AS metric_seconds
+                FROM athlete_curve_rows_1y
+                WHERE rank_aes IS NOT NULL
+                  AND raw_seconds IS NOT NULL
+            ),
+            ranked_metric_rows AS (
+                SELECT
+                    metric_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY athlete_code
+                        ORDER BY display_rank DESC, exact_rank DESC, metric_seconds ASC NULLS LAST, event_dt DESC, metric_order ASC
+                    ) AS athlete_pick_rn
+                FROM metric_rows
+                WHERE display_rank IS NOT NULL
+                  AND metric_seconds IS NOT NULL
+            ),
+            best_rows AS (
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    rank_metric,
+                    rank_suffix,
+                    exact_rank,
+                    display_rank,
+                    metric_seconds,
+                    CONCAT(display_rank::text, rank_suffix) AS rank_display
+                FROM ranked_metric_rows
+                WHERE athlete_pick_rn = 1
+            ),
+            selected AS (
+                SELECT *
+                FROM best_rows
+                WHERE athlete_code = :athlete_code
+            ),
+            peer_pool AS (
+                SELECT
+                    best_rows.*,
+                    ROW_NUMBER() OVER (
+                        ORDER BY metric_seconds ASC, exact_rank DESC, LOWER(athlete_name) ASC, athlete_code ASC
+                    ) AS peer_rn
+                FROM best_rows
+                JOIN selected
+                  ON selected.display_rank = best_rows.display_rank
+            ),
+            selected_position AS (
+                SELECT peer_rn AS selected_peer_rn
+                FROM peer_pool
+                WHERE athlete_code = :athlete_code
+            )
+            SELECT
+                peer_pool.athlete_code,
+                peer_pool.athlete_name,
+                peer_pool.club,
+                peer_pool.age_group,
+                peer_pool.age_grade,
+                TO_CHAR(peer_pool.event_dt, 'DDMonYY') AS event_date,
+                peer_pool.rank_metric,
+                peer_pool.rank_suffix,
+                peer_pool.display_rank AS rank_score,
+                ROUND(peer_pool.exact_rank::numeric, 1) AS exact_rank,
+                peer_pool.rank_display,
+                ROUND(peer_pool.metric_seconds)::int AS best_time_seconds,
+                peer_pool.peer_rn,
+                selected_position.selected_peer_rn,
+                (peer_pool.athlete_code = :athlete_code) AS is_selected
+            FROM peer_pool
+            CROSS JOIN selected_position
+            WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
+                                        AND selected_position.selected_peer_rn + :below_count
+            ORDER BY peer_pool.peer_rn
+        """)
+
+        try:
+                result_proxy = db.session.execute(sql, {
+                        'athlete_code': athlete_code,
+                        'above_count': above_count,
+                        'below_count': below_count
+                })
+                column_names = result_proxy.keys()
+                rows = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
+
+                selected_row = next((row for row in rows if row.get('is_selected')), None)
+
+                db.session.commit()
+                return jsonify({
+                        'selectedAthleteCode': athlete_code,
+                        'selectedRankScore': selected_row.get('rank_score') if selected_row else None,
+                        'selectedRankDisplay': selected_row.get('rank_display') if selected_row else None,
+                        'rows': rows
+                })
+
+        except Exception as e:
+                try:
+                        db.session.rollback()
+                except Exception:
+                        pass
+                tb = traceback.format_exc()
+                print(f"Database error in get_next_ext_similar: {e}\n{tb}")
+                return jsonify({
+                        'error': 'Failed to fetch data from the database',
+                        'exception': str(e),
+                        'traceback': tb
+                }), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
