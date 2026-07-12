@@ -2754,10 +2754,20 @@ def get_next_ext_similar():
                     ep.athlete_code::text AS athlete_code,
                     COALESCE(NULLIF(BTRIM(ep.name), ''), NULLIF(BTRIM(a.name), ''), ep.athlete_code::text) AS athlete_name,
                     COALESCE(NULLIF(BTRIM(ep.club), ''), NULLIF(BTRIM(a.club), ''), '') AS club,
-                    ep.event_date::date AS event_dt,
+                    to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
                     NULLIF(BTRIM(ep.age_group), '') AS age_group,
                     NULLIF(BTRIM(ep.age_grade::text), '') AS age_grade,
-                    time_to_seconds(ep.time)::numeric AS raw_seconds,
+                    CASE
+                        WHEN ep.time IS NULL OR BTRIM(ep.time) = '' THEN NULL
+                        WHEN length(ep.time) - length(replace(ep.time, ':', '')) = 2 THEN
+                            CAST(substring(ep.time, 1, strpos(ep.time, ':') - 1) AS INTEGER) * 3600 +
+                            CAST(substring(ep.time, strpos(ep.time, ':') + 1, strpos(substring(ep.time, strpos(ep.time, ':') + 1), ':') - 1) AS INTEGER) * 60 +
+                            CAST(substring(ep.time, length(ep.time) - 1, 2) AS INTEGER)
+                        WHEN strpos(ep.time, ':') > 0 THEN
+                            CAST(substring(ep.time, 1, strpos(ep.time, ':') - 1) AS INTEGER) * 60 +
+                            CAST(substring(ep.time, strpos(ep.time, ':') + 1) AS INTEGER)
+                        ELSE NULL
+                    END::numeric AS raw_seconds,
                     ep.event_rank_b::numeric AS rank_b,
                     ep.event_rank_e::numeric AS rank_e,
                     ep.event_rank_ae::numeric AS rank_ae,
@@ -2772,7 +2782,7 @@ def get_next_ext_similar():
                 LEFT JOIN parkrun_events pe
                   ON pe.event_code = ep.event_code
                  AND pe.event_date = ep.event_date
-                WHERE ep.event_date::date >= CURRENT_DATE - INTERVAL '1 year'
+                WHERE to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
             ),
             metric_rows AS (
                 SELECT
