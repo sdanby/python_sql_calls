@@ -2776,8 +2776,6 @@ def get_next_ext_similar():
                 SELECT
                     best_rows.*
                 FROM best_rows
-                JOIN selected
-                  ON selected.display_rank = best_rows.display_rank
             ),
             favorite_course_ranked AS (
                 SELECT
@@ -3039,8 +3037,7 @@ def get_next_ext_similar():
                 FROM mv_best_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
-                  AND mv.time_seconds IS NOT NULL
-                  AND mv.rank >= selected.min_exact_rank
+                                    AND mv.time_seconds IS NOT NULL
 
                 UNION ALL
 
@@ -3061,8 +3058,7 @@ def get_next_ext_similar():
                 FROM mv_best_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
-                  AND mv.event_adj_time_seconds IS NOT NULL
-                  AND mv.rank >= selected.min_exact_rank
+                                    AND mv.event_adj_time_seconds IS NOT NULL
 
                 UNION ALL
 
@@ -3083,8 +3079,7 @@ def get_next_ext_similar():
                 FROM mv_best_age_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
-                  AND mv.age_event_adj_time_seconds IS NOT NULL
-                  AND mv.rank >= selected.min_exact_rank
+                                    AND mv.age_event_adj_time_seconds IS NOT NULL
 
                 UNION ALL
 
@@ -3105,8 +3100,7 @@ def get_next_ext_similar():
                 FROM mv_best_sex_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
-                  AND mv.sex_event_adj_time_seconds IS NOT NULL
-                  AND mv.rank >= selected.min_exact_rank
+                                    AND mv.sex_event_adj_time_seconds IS NOT NULL
 
                 UNION ALL
 
@@ -3127,8 +3121,7 @@ def get_next_ext_similar():
                 FROM mv_best_age_sex_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
-                  AND mv.age_sex_event_adj_time_seconds IS NOT NULL
-                  AND mv.rank >= selected.min_exact_rank
+                                    AND mv.age_sex_event_adj_time_seconds IS NOT NULL
             ),
             ranked_metric_rows AS (
                 SELECT
