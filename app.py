@@ -2748,7 +2748,190 @@ def get_next_ext_similar():
         above_count = max(0, min(50, above_count if above_count is not None else 10))
         below_count = max(0, min(50, below_count if below_count is not None else 10))
 
-        sql = text("""
+        mv_names = [
+                'mv_best_1y_curve',
+                'mv_best_event_1y_curve',
+                'mv_best_age_event_1y_curve',
+                'mv_best_sex_event_1y_curve',
+                'mv_best_age_sex_event_1y_curve'
+        ]
+        mv_exists_sql = text("""
+            SELECT COUNT(*)
+            FROM pg_matviews
+            WHERE schemaname = 'public'
+              AND matviewname = ANY(:mv_names)
+        """)
+        mv_count = db.session.execute(mv_exists_sql, {'mv_names': mv_names}).scalar() or 0
+        use_mv_fast_path = mv_count == len(mv_names)
+
+        if use_mv_fast_path:
+                sql = text("""
+            WITH metric_rows AS (
+                SELECT
+                    athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(name), ''), athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(club), ''), '') AS club,
+                    to_date(event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(age_group), '') AS age_group,
+                    NULLIF(BTRIM(age_grade::text), '') AS age_grade,
+                    'B'::text AS rank_metric,
+                    '*'::text AS rank_suffix,
+                    1 AS metric_order,
+                    rank::numeric AS exact_rank,
+                    ROUND(rank)::int AS display_rank,
+                    time_seconds::numeric AS metric_seconds
+                FROM mv_best_1y_curve
+                WHERE rank IS NOT NULL
+                  AND time_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(name), ''), athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(club), ''), ''),
+                    to_date(event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(age_group), ''),
+                    NULLIF(BTRIM(age_grade::text), ''),
+                    'E'::text,
+                    'E'::text,
+                    2,
+                    rank::numeric,
+                    ROUND(rank)::int,
+                    event_adj_time_seconds::numeric
+                FROM mv_best_event_1y_curve
+                WHERE rank IS NOT NULL
+                  AND event_adj_time_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(name), ''), athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(club), ''), ''),
+                    to_date(event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(age_group), ''),
+                    NULLIF(BTRIM(age_grade::text), ''),
+                    'AE'::text,
+                    'AE'::text,
+                    3,
+                    rank::numeric,
+                    ROUND(rank)::int,
+                    age_event_adj_time_seconds::numeric
+                FROM mv_best_age_event_1y_curve
+                WHERE rank IS NOT NULL
+                  AND age_event_adj_time_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(name), ''), athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(club), ''), ''),
+                    to_date(event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(age_group), ''),
+                    NULLIF(BTRIM(age_grade::text), ''),
+                    'ES'::text,
+                    'ES'::text,
+                    4,
+                    rank::numeric,
+                    ROUND(rank)::int,
+                    sex_event_adj_time_seconds::numeric
+                FROM mv_best_sex_event_1y_curve
+                WHERE rank IS NOT NULL
+                  AND sex_event_adj_time_seconds IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(name), ''), athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(club), ''), ''),
+                    to_date(event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(age_group), ''),
+                    NULLIF(BTRIM(age_grade::text), ''),
+                    'AES'::text,
+                    'AES'::text,
+                    5,
+                    rank::numeric,
+                    ROUND(rank)::int,
+                    age_sex_event_adj_time_seconds::numeric
+                FROM mv_best_age_sex_event_1y_curve
+                WHERE rank IS NOT NULL
+                  AND age_sex_event_adj_time_seconds IS NOT NULL
+            ),
+            ranked_metric_rows AS (
+                SELECT
+                    metric_rows.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY athlete_code
+                        ORDER BY display_rank DESC, exact_rank DESC, metric_seconds ASC NULLS LAST, event_dt DESC, metric_order ASC
+                    ) AS athlete_pick_rn
+                FROM metric_rows
+                WHERE display_rank IS NOT NULL
+                  AND metric_seconds IS NOT NULL
+            ),
+            best_rows AS (
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    rank_metric,
+                    rank_suffix,
+                    exact_rank,
+                    display_rank,
+                    metric_seconds,
+                    CONCAT(display_rank::text, rank_suffix) AS rank_display
+                FROM ranked_metric_rows
+                WHERE athlete_pick_rn = 1
+            ),
+            selected AS (
+                SELECT *
+                FROM best_rows
+                WHERE athlete_code = :athlete_code
+            ),
+            peer_pool AS (
+                SELECT
+                    best_rows.*,
+                    ROW_NUMBER() OVER (
+                        ORDER BY best_rows.metric_seconds ASC, best_rows.exact_rank DESC, LOWER(best_rows.athlete_name) ASC, best_rows.athlete_code ASC
+                    ) AS peer_rn
+                FROM best_rows
+                JOIN selected
+                  ON selected.display_rank = best_rows.display_rank
+            ),
+            selected_position AS (
+                SELECT peer_rn AS selected_peer_rn
+                FROM peer_pool
+                WHERE athlete_code = :athlete_code
+            )
+            SELECT
+                peer_pool.athlete_code,
+                peer_pool.athlete_name,
+                peer_pool.club,
+                peer_pool.age_group,
+                peer_pool.age_grade,
+                TO_CHAR(peer_pool.event_dt, 'DDMonYY') AS event_date,
+                peer_pool.rank_metric,
+                peer_pool.rank_suffix,
+                peer_pool.display_rank AS rank_score,
+                ROUND(peer_pool.exact_rank::numeric, 1) AS exact_rank,
+                peer_pool.rank_display,
+                ROUND(peer_pool.metric_seconds)::int AS best_time_seconds,
+                peer_pool.peer_rn,
+                selected_position.selected_peer_rn,
+                (peer_pool.athlete_code = :athlete_code) AS is_selected
+            FROM peer_pool
+            CROSS JOIN selected_position
+            WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
+                                        AND selected_position.selected_peer_rn + :below_count
+            ORDER BY peer_pool.peer_rn
+                """)
+        else:
+                sql = text("""
             WITH athlete_curve_rows_1y AS (
                 SELECT
                     ep.athlete_code::text AS athlete_code,
@@ -2959,7 +3142,7 @@ def get_next_ext_similar():
             WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
                                         AND selected_position.selected_peer_rn + :below_count
             ORDER BY peer_pool.peer_rn
-        """)
+                """)
 
         try:
                 result_proxy = db.session.execute(sql, {
