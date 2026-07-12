@@ -2927,7 +2927,7 @@ def get_next_ext_similar():
                 SELECT
                     best_rows.*,
                     ROW_NUMBER() OVER (
-                        ORDER BY metric_seconds ASC, exact_rank DESC, LOWER(athlete_name) ASC, athlete_code ASC
+                        ORDER BY best_rows.metric_seconds ASC, best_rows.exact_rank DESC, LOWER(best_rows.athlete_name) ASC, best_rows.athlete_code ASC
                     ) AS peer_rn
                 FROM best_rows
                 JOIN selected
