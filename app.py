@@ -2801,7 +2801,8 @@ def get_next_ext_similar():
                 SELECT
                     athlete_code,
                     freq_course_code,
-                    freq_course
+                    freq_course,
+                    freq_course_count
                 FROM favorite_course_ranked
                 WHERE favorite_rn = 1
             ),
@@ -2835,6 +2836,7 @@ def get_next_ext_similar():
                     ca.*,
                     favorite_course.freq_course_code,
                     COALESCE(favorite_course.freq_course, '--') AS freq_course,
+                    COALESCE(favorite_course.freq_course_count, 0)::int AS local_runs_1y,
                     best_course.best_course_code,
                     COALESCE(best_course.best_course, '--') AS best_course,
                     ROW_NUMBER() OVER (
@@ -2866,8 +2868,10 @@ def get_next_ext_similar():
                 ROUND(peer_pool.exact_rank::numeric, 1) AS exact_rank,
                 peer_pool.rank_display,
                 ROUND(peer_pool.metric_seconds)::int AS best_time_seconds,
+                ROUND(peer_pool.actual_time_seconds)::int AS actual_time_seconds,
                 peer_pool.best_course_code,
                 peer_pool.best_course,
+                peer_pool.local_runs_1y,
                 peer_pool.freq_course_code,
                 peer_pool.freq_course,
                 peer_pool.peer_rn,
@@ -2895,7 +2899,8 @@ def get_next_ext_similar():
                     1 AS metric_order,
                     rank::numeric AS exact_rank,
                     ROUND(rank)::int AS display_rank,
-                    time_seconds::numeric AS metric_seconds
+                    time_seconds::numeric AS metric_seconds,
+                    time_seconds::numeric AS actual_time_seconds
                 FROM mv_best_1y_curve
                                 WHERE athlete_code::text = :athlete_code
                                     AND rank IS NOT NULL
@@ -2915,7 +2920,8 @@ def get_next_ext_similar():
                     2,
                     rank::numeric,
                     ROUND(rank)::int,
-                    event_adj_time_seconds::numeric
+                    event_adj_time_seconds::numeric,
+                    time_seconds::numeric
                 FROM mv_best_event_1y_curve
                                 WHERE athlete_code::text = :athlete_code
                                     AND rank IS NOT NULL
@@ -2935,7 +2941,8 @@ def get_next_ext_similar():
                     3,
                     rank::numeric,
                     ROUND(rank)::int,
-                    age_event_adj_time_seconds::numeric
+                    age_event_adj_time_seconds::numeric,
+                    time_seconds::numeric
                 FROM mv_best_age_event_1y_curve
                                 WHERE athlete_code::text = :athlete_code
                                     AND rank IS NOT NULL
@@ -2955,7 +2962,8 @@ def get_next_ext_similar():
                     4,
                     rank::numeric,
                     ROUND(rank)::int,
-                    sex_event_adj_time_seconds::numeric
+                    sex_event_adj_time_seconds::numeric,
+                    time_seconds::numeric
                 FROM mv_best_sex_event_1y_curve
                                 WHERE athlete_code::text = :athlete_code
                                     AND rank IS NOT NULL
@@ -2975,7 +2983,8 @@ def get_next_ext_similar():
                     5,
                     rank::numeric,
                     ROUND(rank)::int,
-                    age_sex_event_adj_time_seconds::numeric
+                                        age_sex_event_adj_time_seconds::numeric,
+                                        time_seconds::numeric
                 FROM mv_best_age_sex_event_1y_curve
                 WHERE athlete_code::text = :athlete_code
                   AND rank IS NOT NULL
@@ -3004,6 +3013,7 @@ def get_next_ext_similar():
                     exact_rank,
                     display_rank,
                     metric_seconds,
+                    actual_time_seconds,
                     CONCAT(display_rank::text, rank_suffix) AS rank_display,
                     (display_rank::numeric - 0.5) AS min_exact_rank
                 FROM selected_ranked
@@ -3022,7 +3032,8 @@ def get_next_ext_similar():
                     1 AS metric_order,
                     mv.rank::numeric AS exact_rank,
                     ROUND(mv.rank)::int AS display_rank,
-                    mv.time_seconds::numeric AS metric_seconds
+                    mv.time_seconds::numeric AS metric_seconds,
+                    mv.time_seconds::numeric AS actual_time_seconds
                 FROM mv_best_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
@@ -3043,7 +3054,8 @@ def get_next_ext_similar():
                     2,
                     mv.rank::numeric,
                     ROUND(mv.rank)::int,
-                    mv.event_adj_time_seconds::numeric
+                    mv.event_adj_time_seconds::numeric,
+                    mv.time_seconds::numeric
                 FROM mv_best_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
@@ -3064,7 +3076,8 @@ def get_next_ext_similar():
                     3,
                     mv.rank::numeric,
                     ROUND(mv.rank)::int,
-                    mv.age_event_adj_time_seconds::numeric
+                    mv.age_event_adj_time_seconds::numeric,
+                    mv.time_seconds::numeric
                 FROM mv_best_age_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
@@ -3085,7 +3098,8 @@ def get_next_ext_similar():
                     4,
                     mv.rank::numeric,
                     ROUND(mv.rank)::int,
-                    mv.sex_event_adj_time_seconds::numeric
+                    mv.sex_event_adj_time_seconds::numeric,
+                    mv.time_seconds::numeric
                 FROM mv_best_sex_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
@@ -3106,7 +3120,8 @@ def get_next_ext_similar():
                     5,
                     mv.rank::numeric,
                     ROUND(mv.rank)::int,
-                    mv.age_sex_event_adj_time_seconds::numeric
+                    mv.age_sex_event_adj_time_seconds::numeric,
+                    mv.time_seconds::numeric
                 FROM mv_best_age_sex_event_1y_curve mv
                 CROSS JOIN selected
                 WHERE mv.rank IS NOT NULL
@@ -3135,6 +3150,7 @@ def get_next_ext_similar():
                     exact_rank,
                     display_rank,
                     metric_seconds,
+                    actual_time_seconds,
                     CONCAT(display_rank::text, rank_suffix) AS rank_display
                 FROM ranked_metric_rows
                 WHERE athlete_pick_rn = 1
@@ -3190,7 +3206,8 @@ def get_next_ext_similar():
                     1 AS metric_order,
                     rank_b AS exact_rank,
                     ROUND(rank_b)::int AS display_rank,
-                    raw_seconds AS metric_seconds
+                                        raw_seconds AS metric_seconds,
+                                        raw_seconds AS actual_time_seconds
                 FROM athlete_curve_rows_1y
                 WHERE rank_b IS NOT NULL
                   AND raw_seconds IS NOT NULL
@@ -3212,7 +3229,8 @@ def get_next_ext_similar():
                     CASE
                         WHEN coeff_product IS NULL THEN NULL
                         ELSE raw_seconds / coeff_product
-                    END AS metric_seconds
+                    END AS metric_seconds,
+                    raw_seconds AS actual_time_seconds
                 FROM athlete_curve_rows_1y
                 WHERE rank_e IS NOT NULL
                   AND raw_seconds IS NOT NULL
@@ -3234,7 +3252,8 @@ def get_next_ext_similar():
                     CASE
                         WHEN coeff_product IS NULL OR age_ratio_male IS NULL THEN NULL
                         ELSE raw_seconds / (coeff_product * age_ratio_male)
-                    END AS metric_seconds
+                    END AS metric_seconds,
+                    raw_seconds AS actual_time_seconds
                 FROM athlete_curve_rows_1y
                 WHERE rank_ae IS NOT NULL
                   AND raw_seconds IS NOT NULL
@@ -3256,7 +3275,8 @@ def get_next_ext_similar():
                     CASE
                         WHEN coeff_product IS NULL OR age_ratio_male IS NULL OR age_ratio_sex IS NULL THEN NULL
                         ELSE raw_seconds / (coeff_product * (age_ratio_sex / age_ratio_male))
-                    END AS metric_seconds
+                    END AS metric_seconds,
+                    raw_seconds AS actual_time_seconds
                 FROM athlete_curve_rows_1y
                 WHERE rank_es IS NOT NULL
                   AND raw_seconds IS NOT NULL
@@ -3278,7 +3298,8 @@ def get_next_ext_similar():
                     CASE
                         WHEN coeff_product IS NULL OR age_ratio_sex IS NULL THEN NULL
                         ELSE raw_seconds / (coeff_product * age_ratio_sex)
-                    END AS metric_seconds
+                    END AS metric_seconds,
+                    raw_seconds AS actual_time_seconds
                 FROM athlete_curve_rows_1y
                 WHERE rank_aes IS NOT NULL
                   AND raw_seconds IS NOT NULL
@@ -3307,6 +3328,7 @@ def get_next_ext_similar():
                     exact_rank,
                     display_rank,
                     metric_seconds,
+                    actual_time_seconds,
                     CONCAT(display_rank::text, rank_suffix) AS rank_display
                 FROM ranked_metric_rows
                 WHERE athlete_pick_rn = 1
