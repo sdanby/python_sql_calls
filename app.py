@@ -2748,9 +2748,11 @@ def get_next_ext_similar():
         course_code_filter = request.args.get('course_code', default=None, type=str)
         above_count = max(0, min(50, above_count if above_count is not None else 10))
         below_count = max(0, min(50, below_count if below_count is not None else 10))
-        course_code_filter = str(course_code_filter or '').strip() or None
-        if course_code_filter and course_code_filter.upper() == 'ALL':
-                course_code_filter = None
+        course_code_filter_values = [value.strip() for value in str(course_code_filter or '').split(',') if value.strip()]
+        if any(value.upper() == 'ALL' for value in course_code_filter_values):
+            course_code_filter_values = []
+        course_code_filter_csv = ','.join(course_code_filter_values) if course_code_filter_values else None
+        has_course_filter = bool(course_code_filter_values)
 
         mv_names = [
                 'mv_best_1y_curve',
@@ -2847,8 +2849,8 @@ def get_next_ext_similar():
                   ON favorite_course.athlete_code = ca.athlete_code
                 LEFT JOIN best_course
                   ON best_course.athlete_code = ca.athlete_code
-                WHERE :course_code_filter IS NULL
-                   OR favorite_course.freq_course_code = :course_code_filter
+                     WHERE :has_course_filter = false
+                         OR favorite_course.freq_course_code = ANY(string_to_array(:course_code_filter_csv, ','))
             ),
             selected_position AS (
                 SELECT peer_rn AS selected_peer_rn
@@ -3343,7 +3345,8 @@ def get_next_ext_similar():
         try:
                 result_proxy = db.session.execute(sql, {
                         'athlete_code': athlete_code,
-                        'course_code_filter': course_code_filter,
+                        'course_code_filter_csv': course_code_filter_csv,
+                        'has_course_filter': has_course_filter,
                         'above_count': above_count,
                         'below_count': below_count
                 })
@@ -3357,7 +3360,7 @@ def get_next_ext_similar():
                         'selectedAthleteCode': athlete_code,
                         'selectedRankScore': selected_row.get('rank_score') if selected_row else None,
                         'selectedRankDisplay': selected_row.get('rank_display') if selected_row else None,
-                    'courseCodeFilter': course_code_filter,
+                    'courseCodeFilter': course_code_filter_values or None,
                         'rows': rows
                 })
 
