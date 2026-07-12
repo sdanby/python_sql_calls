@@ -2766,7 +2766,7 @@ def get_next_ext_similar():
 
         if use_mv_fast_path:
                 sql = text("""
-            WITH metric_rows AS (
+            WITH selected_metric_rows AS (
                 SELECT
                     athlete_code::text AS athlete_code,
                     COALESCE(NULLIF(BTRIM(name), ''), athlete_code::text) AS athlete_name,
@@ -2781,7 +2781,8 @@ def get_next_ext_similar():
                     ROUND(rank)::int AS display_rank,
                     time_seconds::numeric AS metric_seconds
                 FROM mv_best_1y_curve
-                WHERE rank IS NOT NULL
+                                WHERE athlete_code::text = :athlete_code
+                                    AND rank IS NOT NULL
                   AND time_seconds IS NOT NULL
 
                 UNION ALL
@@ -2800,7 +2801,8 @@ def get_next_ext_similar():
                     ROUND(rank)::int,
                     event_adj_time_seconds::numeric
                 FROM mv_best_event_1y_curve
-                WHERE rank IS NOT NULL
+                                WHERE athlete_code::text = :athlete_code
+                                    AND rank IS NOT NULL
                   AND event_adj_time_seconds IS NOT NULL
 
                 UNION ALL
@@ -2819,7 +2821,8 @@ def get_next_ext_similar():
                     ROUND(rank)::int,
                     age_event_adj_time_seconds::numeric
                 FROM mv_best_age_event_1y_curve
-                WHERE rank IS NOT NULL
+                                WHERE athlete_code::text = :athlete_code
+                                    AND rank IS NOT NULL
                   AND age_event_adj_time_seconds IS NOT NULL
 
                 UNION ALL
@@ -2838,7 +2841,8 @@ def get_next_ext_similar():
                     ROUND(rank)::int,
                     sex_event_adj_time_seconds::numeric
                 FROM mv_best_sex_event_1y_curve
-                WHERE rank IS NOT NULL
+                                WHERE athlete_code::text = :athlete_code
+                                    AND rank IS NOT NULL
                   AND sex_event_adj_time_seconds IS NOT NULL
 
                 UNION ALL
@@ -2857,8 +2861,141 @@ def get_next_ext_similar():
                     ROUND(rank)::int,
                     age_sex_event_adj_time_seconds::numeric
                 FROM mv_best_age_sex_event_1y_curve
-                WHERE rank IS NOT NULL
+                WHERE athlete_code::text = :athlete_code
+                  AND rank IS NOT NULL
                   AND age_sex_event_adj_time_seconds IS NOT NULL
+            ),
+            selected_ranked AS (
+                SELECT
+                    selected_metric_rows.*,
+                    ROW_NUMBER() OVER (
+                        ORDER BY display_rank DESC, exact_rank DESC, metric_seconds ASC NULLS LAST, event_dt DESC, metric_order ASC
+                    ) AS selected_rn
+                FROM selected_metric_rows
+                WHERE display_rank IS NOT NULL
+                  AND metric_seconds IS NOT NULL
+            ),
+            selected AS (
+                SELECT
+                    athlete_code,
+                    athlete_name,
+                    club,
+                    event_dt,
+                    age_group,
+                    age_grade,
+                    rank_metric,
+                    rank_suffix,
+                    exact_rank,
+                    display_rank,
+                    metric_seconds,
+                    CONCAT(display_rank::text, rank_suffix) AS rank_display,
+                    (display_rank::numeric - 0.5) AS min_exact_rank
+                FROM selected_ranked
+                WHERE selected_rn = 1
+            ),
+            metric_rows AS (
+                SELECT
+                    mv.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), '') AS club,
+                    to_date(mv.event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(mv.age_group), '') AS age_group,
+                    NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
+                    'B'::text AS rank_metric,
+                    '*'::text AS rank_suffix,
+                    1 AS metric_order,
+                    mv.rank::numeric AS exact_rank,
+                    ROUND(mv.rank)::int AS display_rank,
+                    mv.time_seconds::numeric AS metric_seconds
+                FROM mv_best_1y_curve mv
+                CROSS JOIN selected
+                WHERE mv.rank IS NOT NULL
+                  AND mv.time_seconds IS NOT NULL
+                  AND mv.rank >= selected.min_exact_rank
+
+                UNION ALL
+
+                SELECT
+                    mv.athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), ''),
+                    to_date(mv.event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(mv.age_group), ''),
+                    NULLIF(BTRIM(mv.age_grade::text), ''),
+                    'E'::text,
+                    'E'::text,
+                    2,
+                    mv.rank::numeric,
+                    ROUND(mv.rank)::int,
+                    mv.event_adj_time_seconds::numeric
+                FROM mv_best_event_1y_curve mv
+                CROSS JOIN selected
+                WHERE mv.rank IS NOT NULL
+                  AND mv.event_adj_time_seconds IS NOT NULL
+                  AND mv.rank >= selected.min_exact_rank
+
+                UNION ALL
+
+                SELECT
+                    mv.athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), ''),
+                    to_date(mv.event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(mv.age_group), ''),
+                    NULLIF(BTRIM(mv.age_grade::text), ''),
+                    'AE'::text,
+                    'AE'::text,
+                    3,
+                    mv.rank::numeric,
+                    ROUND(mv.rank)::int,
+                    mv.age_event_adj_time_seconds::numeric
+                FROM mv_best_age_event_1y_curve mv
+                CROSS JOIN selected
+                WHERE mv.rank IS NOT NULL
+                  AND mv.age_event_adj_time_seconds IS NOT NULL
+                  AND mv.rank >= selected.min_exact_rank
+
+                UNION ALL
+
+                SELECT
+                    mv.athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), ''),
+                    to_date(mv.event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(mv.age_group), ''),
+                    NULLIF(BTRIM(mv.age_grade::text), ''),
+                    'ES'::text,
+                    'ES'::text,
+                    4,
+                    mv.rank::numeric,
+                    ROUND(mv.rank)::int,
+                    mv.sex_event_adj_time_seconds::numeric
+                FROM mv_best_sex_event_1y_curve mv
+                CROSS JOIN selected
+                WHERE mv.rank IS NOT NULL
+                  AND mv.sex_event_adj_time_seconds IS NOT NULL
+                  AND mv.rank >= selected.min_exact_rank
+
+                UNION ALL
+
+                SELECT
+                    mv.athlete_code::text,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text),
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), ''),
+                    to_date(mv.event_date, 'DD/MM/YYYY'),
+                    NULLIF(BTRIM(mv.age_group), ''),
+                    NULLIF(BTRIM(mv.age_grade::text), ''),
+                    'AES'::text,
+                    'AES'::text,
+                    5,
+                    mv.rank::numeric,
+                    ROUND(mv.rank)::int,
+                    mv.age_sex_event_adj_time_seconds::numeric
+                FROM mv_best_age_sex_event_1y_curve mv
+                CROSS JOIN selected
+                WHERE mv.rank IS NOT NULL
+                  AND mv.age_sex_event_adj_time_seconds IS NOT NULL
+                  AND mv.rank >= selected.min_exact_rank
             ),
             ranked_metric_rows AS (
                 SELECT
@@ -2868,8 +3005,6 @@ def get_next_ext_similar():
                         ORDER BY display_rank DESC, exact_rank DESC, metric_seconds ASC NULLS LAST, event_dt DESC, metric_order ASC
                     ) AS athlete_pick_rn
                 FROM metric_rows
-                WHERE display_rank IS NOT NULL
-                  AND metric_seconds IS NOT NULL
             ),
             best_rows AS (
                 SELECT
@@ -2887,11 +3022,6 @@ def get_next_ext_similar():
                     CONCAT(display_rank::text, rank_suffix) AS rank_display
                 FROM ranked_metric_rows
                 WHERE athlete_pick_rn = 1
-            ),
-            selected AS (
-                SELECT *
-                FROM best_rows
-                WHERE athlete_code = :athlete_code
             ),
             peer_pool AS (
                 SELECT
