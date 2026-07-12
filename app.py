@@ -2745,8 +2745,12 @@ def get_next_ext_similar():
 
         above_count = request.args.get('above', default=10, type=int)
         below_count = request.args.get('below', default=10, type=int)
+        course_code_filter = request.args.get('course_code', default=None, type=str)
         above_count = max(0, min(50, above_count if above_count is not None else 10))
         below_count = max(0, min(50, below_count if below_count is not None else 10))
+        course_code_filter = str(course_code_filter or '').strip() or None
+        if course_code_filter and course_code_filter.upper() == 'ALL':
+                course_code_filter = None
 
         mv_names = [
                 'mv_best_1y_curve',
@@ -2763,6 +2767,118 @@ def get_next_ext_similar():
         """)
         mv_count = db.session.execute(mv_exists_sql, {'mv_names': mv_names}).scalar() or 0
         use_mv_fast_path = mv_count == len(mv_names)
+
+        common_peer_tail = """
+            ,
+            candidate_athletes AS (
+                SELECT
+                    best_rows.*
+                FROM best_rows
+                JOIN selected
+                  ON selected.display_rank = best_rows.display_rank
+            ),
+            favorite_course_ranked AS (
+                SELECT
+                    ep.athlete_code::text AS athlete_code,
+                    ep.event_code::text AS freq_course_code,
+                    COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) AS freq_course,
+                    COALESCE(ep.last_event_code_count_long, 0)::numeric AS freq_course_count,
+                    to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ep.athlete_code
+                        ORDER BY COALESCE(ep.last_event_code_count_long, 0) DESC,
+                                 to_date(ep.event_date, 'DD/MM/YYYY') DESC,
+                                 COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) ASC
+                    ) AS favorite_rn
+                FROM eventpositions ep
+                JOIN candidate_athletes ca
+                  ON ca.athlete_code = ep.athlete_code::text
+                LEFT JOIN events ev
+                  ON ev.event_code = ep.event_code
+                WHERE to_date(ep.event_date, 'DD/MM/YYYY') >= (CURRENT_DATE - INTERVAL '1 year')::date
+            ),
+            favorite_course AS (
+                SELECT
+                    athlete_code,
+                    freq_course_code,
+                    freq_course
+                FROM favorite_course_ranked
+                WHERE favorite_rn = 1
+            ),
+            best_course_ranked AS (
+                SELECT
+                    ca.athlete_code,
+                    ep.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) AS best_course,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ca.athlete_code
+                        ORDER BY to_date(ep.event_date, 'DD/MM/YYYY') DESC,
+                                 COALESCE(NULLIF(ev.display_name, ''), ev.event_name, ep.event_code::text) ASC
+                    ) AS best_course_rn
+                FROM candidate_athletes ca
+                LEFT JOIN eventpositions ep
+                  ON ep.athlete_code::text = ca.athlete_code
+                 AND to_date(ep.event_date, 'DD/MM/YYYY') = ca.event_dt
+                LEFT JOIN events ev
+                  ON ev.event_code = ep.event_code
+            ),
+            best_course AS (
+                SELECT
+                    athlete_code,
+                    best_course_code,
+                    best_course
+                FROM best_course_ranked
+                WHERE best_course_rn = 1
+            ),
+            peer_pool AS (
+                SELECT
+                    ca.*,
+                    favorite_course.freq_course_code,
+                    COALESCE(favorite_course.freq_course, '--') AS freq_course,
+                    best_course.best_course_code,
+                    COALESCE(best_course.best_course, '--') AS best_course,
+                    ROW_NUMBER() OVER (
+                        ORDER BY ca.metric_seconds ASC, ca.exact_rank DESC, LOWER(ca.athlete_name) ASC, ca.athlete_code ASC
+                    ) AS peer_rn
+                FROM candidate_athletes ca
+                LEFT JOIN favorite_course
+                  ON favorite_course.athlete_code = ca.athlete_code
+                LEFT JOIN best_course
+                  ON best_course.athlete_code = ca.athlete_code
+                WHERE :course_code_filter IS NULL
+                   OR favorite_course.freq_course_code = :course_code_filter
+            ),
+            selected_position AS (
+                SELECT peer_rn AS selected_peer_rn
+                FROM peer_pool
+                WHERE athlete_code = :athlete_code
+            )
+            SELECT
+                peer_pool.athlete_code,
+                peer_pool.athlete_name,
+                peer_pool.club,
+                peer_pool.age_group,
+                peer_pool.age_grade,
+                TO_CHAR(peer_pool.event_dt, 'DDMonYY') AS event_date,
+                peer_pool.rank_metric,
+                peer_pool.rank_suffix,
+                peer_pool.display_rank AS rank_score,
+                ROUND(peer_pool.exact_rank::numeric, 1) AS exact_rank,
+                peer_pool.rank_display,
+                ROUND(peer_pool.metric_seconds)::int AS best_time_seconds,
+                peer_pool.best_course_code,
+                peer_pool.best_course,
+                peer_pool.freq_course_code,
+                peer_pool.freq_course,
+                peer_pool.peer_rn,
+                selected_position.selected_peer_rn,
+                (peer_pool.athlete_code = :athlete_code) AS is_selected
+            FROM peer_pool
+            CROSS JOIN selected_position
+            WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
+                                        AND selected_position.selected_peer_rn + :below_count
+            ORDER BY peer_pool.peer_rn
+        """
 
         if use_mv_fast_path:
                 sql = text("""
@@ -3022,44 +3138,8 @@ def get_next_ext_similar():
                     CONCAT(display_rank::text, rank_suffix) AS rank_display
                 FROM ranked_metric_rows
                 WHERE athlete_pick_rn = 1
-            ),
-            peer_pool AS (
-                SELECT
-                    best_rows.*,
-                    ROW_NUMBER() OVER (
-                        ORDER BY best_rows.metric_seconds ASC, best_rows.exact_rank DESC, LOWER(best_rows.athlete_name) ASC, best_rows.athlete_code ASC
-                    ) AS peer_rn
-                FROM best_rows
-                JOIN selected
-                  ON selected.display_rank = best_rows.display_rank
-            ),
-            selected_position AS (
-                SELECT peer_rn AS selected_peer_rn
-                FROM peer_pool
-                WHERE athlete_code = :athlete_code
             )
-            SELECT
-                peer_pool.athlete_code,
-                peer_pool.athlete_name,
-                peer_pool.club,
-                peer_pool.age_group,
-                peer_pool.age_grade,
-                TO_CHAR(peer_pool.event_dt, 'DDMonYY') AS event_date,
-                peer_pool.rank_metric,
-                peer_pool.rank_suffix,
-                peer_pool.display_rank AS rank_score,
-                ROUND(peer_pool.exact_rank::numeric, 1) AS exact_rank,
-                peer_pool.rank_display,
-                ROUND(peer_pool.metric_seconds)::int AS best_time_seconds,
-                peer_pool.peer_rn,
-                selected_position.selected_peer_rn,
-                (peer_pool.athlete_code = :athlete_code) AS is_selected
-            FROM peer_pool
-            CROSS JOIN selected_position
-            WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
-                                        AND selected_position.selected_peer_rn + :below_count
-            ORDER BY peer_pool.peer_rn
-                """)
+                """ + common_peer_tail)
         else:
                 sql = text("""
             WITH athlete_curve_rows_1y AS (
@@ -3235,48 +3315,13 @@ def get_next_ext_similar():
                 SELECT *
                 FROM best_rows
                 WHERE athlete_code = :athlete_code
-            ),
-            peer_pool AS (
-                SELECT
-                    best_rows.*,
-                    ROW_NUMBER() OVER (
-                        ORDER BY best_rows.metric_seconds ASC, best_rows.exact_rank DESC, LOWER(best_rows.athlete_name) ASC, best_rows.athlete_code ASC
-                    ) AS peer_rn
-                FROM best_rows
-                JOIN selected
-                  ON selected.display_rank = best_rows.display_rank
-            ),
-            selected_position AS (
-                SELECT peer_rn AS selected_peer_rn
-                FROM peer_pool
-                WHERE athlete_code = :athlete_code
             )
-            SELECT
-                peer_pool.athlete_code,
-                peer_pool.athlete_name,
-                peer_pool.club,
-                peer_pool.age_group,
-                peer_pool.age_grade,
-                TO_CHAR(peer_pool.event_dt, 'DDMonYY') AS event_date,
-                peer_pool.rank_metric,
-                peer_pool.rank_suffix,
-                peer_pool.display_rank AS rank_score,
-                ROUND(peer_pool.exact_rank::numeric, 1) AS exact_rank,
-                peer_pool.rank_display,
-                ROUND(peer_pool.metric_seconds)::int AS best_time_seconds,
-                peer_pool.peer_rn,
-                selected_position.selected_peer_rn,
-                (peer_pool.athlete_code = :athlete_code) AS is_selected
-            FROM peer_pool
-            CROSS JOIN selected_position
-            WHERE peer_pool.peer_rn BETWEEN GREATEST(selected_position.selected_peer_rn - :above_count, 1)
-                                        AND selected_position.selected_peer_rn + :below_count
-            ORDER BY peer_pool.peer_rn
-                """)
+                """ + common_peer_tail)
 
         try:
                 result_proxy = db.session.execute(sql, {
                         'athlete_code': athlete_code,
+                        'course_code_filter': course_code_filter,
                         'above_count': above_count,
                         'below_count': below_count
                 })
@@ -3290,6 +3335,7 @@ def get_next_ext_similar():
                         'selectedAthleteCode': athlete_code,
                         'selectedRankScore': selected_row.get('rank_score') if selected_row else None,
                         'selectedRankDisplay': selected_row.get('rank_display') if selected_row else None,
+                    'courseCodeFilter': course_code_filter,
                         'rows': rows
                 })
 
