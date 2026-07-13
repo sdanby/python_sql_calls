@@ -2746,6 +2746,7 @@ def get_next_ext_similar():
         above_count = request.args.get('above', default=10, type=int)
         below_count = request.args.get('below', default=10, type=int)
         adj_type_filter = request.args.get('adj_type', default='AE', type=str)
+        raw_course_code_filter = request.args.get('course_code', default='', type=str)
 
         above_count = max(0, min(50, above_count if above_count is not None else 10))
         below_count = max(0, min(50, below_count if below_count is not None else 10))
@@ -2755,6 +2756,17 @@ def get_next_ext_similar():
                 adj_type_metric = 'B'
         if adj_type_metric not in {'B', 'E', 'AE', 'ES', 'AES'}:
                 return jsonify({'error': 'adj_type must be one of *, E, AE, ES, AES'}), 400
+
+        course_code_values = []
+        seen_course_codes = set()
+        for raw_value in str(raw_course_code_filter or '').split(','):
+                normalized_value = raw_value.strip()
+                if not normalized_value or normalized_value.upper() == 'ALL' or normalized_value in seen_course_codes:
+                        continue
+                seen_course_codes.add(normalized_value)
+                course_code_values.append(normalized_value)
+        course_codes_csv = ','.join(course_code_values)
+        course_filter_count = len(course_code_values)
 
         mv_metric_config = {
             'B': {
@@ -2905,12 +2917,17 @@ def get_next_ext_similar():
                 WHERE mv.rank IS NOT NULL
                   AND mv.{metric_column} IS NOT NULL
                   AND COALESCE(prf.total_runs_local_parkruns_1y, 0) >= 5
+                        AND (
+                                :course_filter_count = 0
+                            OR mv.event_code::text = ANY(string_to_array(:course_codes_csv, ','))
+                            OR COALESCE(prf.freq_course_code, '') = ANY(string_to_array(:course_codes_csv, ','))
+                        )
                   AND (
                         mv.{metric_column}::numeric < sr.metric_seconds
                      OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text < sr.athlete_code)
                   )
                 ORDER BY mv.{metric_column}::numeric DESC, mv.athlete_code::text DESC
-                LIMIT :above_count
+                LIMIT :side_limit
             ),
             qualified_below AS (
                 SELECT
@@ -2945,12 +2962,17 @@ def get_next_ext_similar():
                 WHERE mv.rank IS NOT NULL
                   AND mv.{metric_column} IS NOT NULL
                   AND COALESCE(prf.total_runs_local_parkruns_1y, 0) >= 5
+                        AND (
+                                :course_filter_count = 0
+                            OR mv.event_code::text = ANY(string_to_array(:course_codes_csv, ','))
+                            OR COALESCE(prf.freq_course_code, '') = ANY(string_to_array(:course_codes_csv, ','))
+                        )
                   AND (
                         mv.{metric_column}::numeric > sr.metric_seconds
                      OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text > sr.athlete_code)
                   )
                 ORDER BY mv.{metric_column}::numeric ASC, mv.athlete_code::text ASC
-                LIMIT :below_count
+                LIMIT :side_limit
             ),
             window_rows AS (
                 SELECT * FROM qualified_above
@@ -2974,6 +2996,23 @@ def get_next_ext_similar():
                 SELECT peer_rn AS selected_peer_rn
                 FROM ordered_rows
                 WHERE athlete_code = :athlete_code
+            ),
+            window_counts AS (
+                SELECT
+                    sp.selected_peer_rn,
+                    COUNT(*)::int AS total_rows,
+                    GREATEST(sp.selected_peer_rn - 1, 0)::int AS available_above,
+                    GREATEST(COUNT(*)::int - sp.selected_peer_rn, 0)::int AS available_below
+                FROM ordered_rows orw
+                CROSS JOIN selected_position sp
+                GROUP BY sp.selected_peer_rn
+            ),
+            final_bounds AS (
+                SELECT
+                    wc.selected_peer_rn,
+                    GREATEST(1, wc.selected_peer_rn - (:above_count + GREATEST(:below_count - wc.available_below, 0))) AS start_rn,
+                    LEAST(wc.total_rows, wc.selected_peer_rn + (:below_count + GREATEST(:above_count - wc.available_above, 0))) AS end_rn
+                FROM window_counts wc
             )
             SELECT
                 orw.athlete_code,
@@ -3000,10 +3039,11 @@ def get_next_ext_similar():
                 orw.freq_course_code,
                 COALESCE(orw.freq_course, '') AS freq_course,
                 orw.peer_rn,
-                sp.selected_peer_rn,
+                fb.selected_peer_rn,
                 (orw.athlete_code = :athlete_code) AS is_selected
             FROM ordered_rows orw
-            CROSS JOIN selected_position sp
+            CROSS JOIN final_bounds fb
+            WHERE orw.peer_rn BETWEEN fb.start_rn AND fb.end_rn
             ORDER BY orw.peer_rn
         """)
 
@@ -3011,7 +3051,10 @@ def get_next_ext_similar():
                 result_proxy = db.session.execute(sql, {
                         'athlete_code': athlete_code,
                         'above_count': above_count,
-                        'below_count': below_count
+                    'below_count': below_count,
+                        'side_limit': above_count + below_count,
+                    'course_codes_csv': course_codes_csv,
+                    'course_filter_count': course_filter_count
                 })
                 column_names = result_proxy.keys()
                 rows = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
@@ -3045,7 +3088,7 @@ def get_next_ext_similar():
                     'selectedPreferredRankScore': selected_preferred_rank_score,
                     'selectedPreferredExactRank': round(selected_preferred_exact_rank, 1) if selected_preferred_exact_rank is not None else None,
                     'selectedPreferredRankDisplay': selected_preferred_rank_display,
-                    'courseCodeFilter': None,
+                    'courseCodeFilter': course_code_values if course_code_values else None,
                         'adjTypeFilter': adj_type_metric,
                         'rows': rows
                 })
