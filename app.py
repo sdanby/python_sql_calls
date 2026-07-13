@@ -2812,6 +2812,20 @@ def get_next_ext_similar():
         metric_column = config['metric_column']
         latest_rank_col = config['latest_rank_col']
         rank_suffix = config['suffix']
+        metric_suffix_by_key = {
+            'B': '*',
+            'E': 'E',
+            'AE': 'AE',
+            'ES': 'ES',
+            'AES': 'AES',
+        }
+        metric_rank_columns = [
+            ('B', 'current_best_rank_b'),
+            ('E', 'current_best_rank_e'),
+            ('AE', 'current_best_rank_ae'),
+            ('ES', 'current_best_rank_es'),
+            ('AES', 'current_best_rank_aes'),
+        ]
 
         sql = text(f"""
             WITH eligible_athletes AS (
@@ -2852,36 +2866,41 @@ def get_next_ext_similar():
                     NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
                     '{adj_type_metric}'::text AS rank_metric,
                     '{rank_suffix}'::text AS rank_suffix,
-                                        mv.{metric_column}::numeric AS metric_seconds,
+                    mv.{metric_column}::numeric AS metric_seconds,
                     mv.time_seconds::numeric AS actual_time_seconds,
-                                        mv.rank::numeric AS best_rank,
-                                        COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
-                                        COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
+                    mv.rank::numeric AS best_rank,
+                    COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
+                    latest.current_best_rank_b::numeric AS current_best_rank_b,
+                    latest.current_best_rank_e::numeric AS current_best_rank_e,
+                    latest.current_best_rank_ae::numeric AS current_best_rank_ae,
+                    latest.current_best_rank_es::numeric AS current_best_rank_es,
+                    latest.current_best_rank_aes::numeric AS current_best_rank_aes,
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
                 FROM {config['table']} mv
-                                JOIN leaderboard_athletes la
-                                    ON la.athlete_code = mv.athlete_code::text
-                                LEFT JOIN latest_rank latest
-                                    ON latest.athlete_code = mv.athlete_code::text
+                JOIN leaderboard_athletes la
+                    ON la.athlete_code = mv.athlete_code::text
+                LEFT JOIN latest_rank latest
+                    ON latest.athlete_code = mv.athlete_code::text
                 LEFT JOIN mv_participant_run_filters prf
-                                    ON prf.athlete_code::text = mv.athlete_code::text
-                                WHERE mv.rank IS NOT NULL
-                                    AND mv.{metric_column} IS NOT NULL
+                    ON prf.athlete_code::text = mv.athlete_code::text
+                WHERE mv.rank IS NOT NULL
+                    AND mv.{metric_column} IS NOT NULL
             ),
             ordered_rows AS (
                 SELECT
-                                        lr.*,
-                                        ROUND(lr.latest_rank)::int AS display_rank,
-                                        CONCAT(ROUND(lr.latest_rank)::int::text, lr.rank_suffix) AS rank_display,
+                    lr.*,
+                    ROUND(lr.latest_rank)::int AS display_rank,
+                    CONCAT(ROUND(lr.latest_rank)::int::text, lr.rank_suffix) AS rank_display,
                     ROW_NUMBER() OVER (
-                                                ORDER BY lr.metric_seconds ASC,
-                                                                 lr.athlete_code ASC
+                        ORDER BY lr.metric_seconds ASC,
+                                 lr.athlete_code ASC
                     ) AS peer_rn
-                                FROM leaderboard_rows lr
-                        ),
-                        selected_position AS (
-                                SELECT peer_rn AS selected_peer_rn
-                                FROM ordered_rows
-                                WHERE athlete_code = :athlete_code
+                FROM leaderboard_rows lr
+            ),
+            selected_position AS (
+                SELECT peer_rn AS selected_peer_rn
+                FROM ordered_rows
+                WHERE athlete_code = :athlete_code
             )
             SELECT
                 orw.athlete_code,
@@ -2900,6 +2919,11 @@ def get_next_ext_similar():
                 orw.best_course_code,
                 COALESCE(orw.best_course, '--') AS best_course,
                 orw.local_runs_1y,
+                orw.current_best_rank_b,
+                orw.current_best_rank_e,
+                orw.current_best_rank_ae,
+                orw.current_best_rank_es,
+                orw.current_best_rank_aes,
                 NULL::text AS freq_course_code,
                 ''::text AS freq_course,
                 orw.peer_rn,
@@ -2922,12 +2946,34 @@ def get_next_ext_similar():
                 rows = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
 
                 selected_row = next((row for row in rows if row.get('is_selected')), None)
+                selected_preferred_metric = None
+                selected_preferred_exact_rank = None
+                if selected_row:
+                    for metric_key, column_name in metric_rank_columns:
+                        raw_value = selected_row.get(column_name)
+                        if raw_value is None:
+                            continue
+                        try:
+                            numeric_value = float(raw_value)
+                        except (TypeError, ValueError):
+                            continue
+                        if selected_preferred_exact_rank is None or numeric_value > selected_preferred_exact_rank:
+                            selected_preferred_metric = metric_key
+                            selected_preferred_exact_rank = numeric_value
+                selected_preferred_rank_score = round(selected_preferred_exact_rank) if selected_preferred_exact_rank is not None else None
+                selected_preferred_rank_display = None
+                if selected_preferred_rank_score is not None and selected_preferred_metric:
+                    selected_preferred_rank_display = f"{selected_preferred_rank_score}{metric_suffix_by_key[selected_preferred_metric]}"
 
                 db.session.commit()
                 return jsonify({
                         'selectedAthleteCode': athlete_code,
                         'selectedRankScore': selected_row.get('rank_score') if selected_row else None,
                         'selectedRankDisplay': selected_row.get('rank_display') if selected_row else None,
+                    'selectedPreferredAdjType': selected_preferred_metric,
+                    'selectedPreferredRankScore': selected_preferred_rank_score,
+                    'selectedPreferredExactRank': round(selected_preferred_exact_rank, 1) if selected_preferred_exact_rank is not None else None,
+                    'selectedPreferredRankDisplay': selected_preferred_rank_display,
                     'courseCodeFilter': None,
                         'adjTypeFilter': adj_type_metric,
                         'rows': rows
