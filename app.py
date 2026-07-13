@@ -2828,25 +2828,7 @@ def get_next_ext_similar():
         ]
 
         sql = text(f"""
-            WITH eligible_athletes AS (
-                SELECT
-                    v0.athlete_code::text AS athlete_code
-                FROM {config['table']} v0
-                                LEFT JOIN mv_participant_run_filters prf0
-                                        ON prf0.athlete_code::text = v0.athlete_code::text
-                WHERE v0.rank IS NOT NULL
-                  AND v0.{metric_column} IS NOT NULL
-                                    AND COALESCE(prf0.total_runs_local_parkruns_1y, 0) >= 5
-                ORDER BY v0.{metric_column} ASC, v0.athlete_code::text ASC
-            ),
-            leaderboard_athletes AS (
-                SELECT
-                    athlete_code
-                FROM eligible_athletes
-                UNION
-                SELECT :athlete_code
-            ),
-            latest_rank AS (
+            WITH latest_rank AS (
                 SELECT
                     m.athlete_code::text AS athlete_code,
                     m.current_best_rank_b,
@@ -2856,7 +2838,7 @@ def get_next_ext_similar():
                     m.current_best_rank_aes
                 FROM mv_latest_curve_ranks m
             ),
-            leaderboard_rows AS (
+            selected_row AS (
                 SELECT
                     mv.athlete_code::text AS athlete_code,
                     COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
@@ -2879,25 +2861,108 @@ def get_next_ext_similar():
                     latest.current_best_rank_aes::numeric AS current_best_rank_aes,
                     COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
                 FROM {config['table']} mv
-                JOIN leaderboard_athletes la
-                    ON la.athlete_code = mv.athlete_code::text
+                LEFT JOIN latest_rank latest
+                    ON latest.athlete_code = mv.athlete_code::text
+                LEFT JOIN mv_participant_run_filters prf
+                    ON prf.athlete_code::text = mv.athlete_code::text
+                WHERE mv.athlete_code::text = :athlete_code
+                  AND mv.rank IS NOT NULL
+                  AND mv.{metric_column} IS NOT NULL
+                LIMIT 1
+            ),
+            qualified_above AS (
+                SELECT
+                    mv.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), '') AS club,
+                    mv.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(BTRIM(mv.event_name), ''), mv.event_code::text) AS best_course,
+                    to_date(mv.event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(mv.age_group), '') AS age_group,
+                    NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
+                    '{adj_type_metric}'::text AS rank_metric,
+                    '{rank_suffix}'::text AS rank_suffix,
+                    mv.{metric_column}::numeric AS metric_seconds,
+                    mv.time_seconds::numeric AS actual_time_seconds,
+                    mv.rank::numeric AS best_rank,
+                    COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
+                    latest.current_best_rank_b::numeric AS current_best_rank_b,
+                    latest.current_best_rank_e::numeric AS current_best_rank_e,
+                    latest.current_best_rank_ae::numeric AS current_best_rank_ae,
+                    latest.current_best_rank_es::numeric AS current_best_rank_es,
+                    latest.current_best_rank_aes::numeric AS current_best_rank_aes,
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
+                FROM {config['table']} mv
+                CROSS JOIN selected_row sr
                 LEFT JOIN latest_rank latest
                     ON latest.athlete_code = mv.athlete_code::text
                 LEFT JOIN mv_participant_run_filters prf
                     ON prf.athlete_code::text = mv.athlete_code::text
                 WHERE mv.rank IS NOT NULL
-                    AND mv.{metric_column} IS NOT NULL
+                  AND mv.{metric_column} IS NOT NULL
+                  AND COALESCE(prf.total_runs_local_parkruns_1y, 0) >= 5
+                  AND (
+                        mv.{metric_column}::numeric < sr.metric_seconds
+                     OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text < sr.athlete_code)
+                  )
+                ORDER BY mv.{metric_column}::numeric DESC, mv.athlete_code::text DESC
+                LIMIT :above_count
+            ),
+            qualified_below AS (
+                SELECT
+                    mv.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), '') AS club,
+                    mv.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(BTRIM(mv.event_name), ''), mv.event_code::text) AS best_course,
+                    to_date(mv.event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(mv.age_group), '') AS age_group,
+                    NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
+                    '{adj_type_metric}'::text AS rank_metric,
+                    '{rank_suffix}'::text AS rank_suffix,
+                    mv.{metric_column}::numeric AS metric_seconds,
+                    mv.time_seconds::numeric AS actual_time_seconds,
+                    mv.rank::numeric AS best_rank,
+                    COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
+                    latest.current_best_rank_b::numeric AS current_best_rank_b,
+                    latest.current_best_rank_e::numeric AS current_best_rank_e,
+                    latest.current_best_rank_ae::numeric AS current_best_rank_ae,
+                    latest.current_best_rank_es::numeric AS current_best_rank_es,
+                    latest.current_best_rank_aes::numeric AS current_best_rank_aes,
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
+                FROM {config['table']} mv
+                CROSS JOIN selected_row sr
+                LEFT JOIN latest_rank latest
+                    ON latest.athlete_code = mv.athlete_code::text
+                LEFT JOIN mv_participant_run_filters prf
+                    ON prf.athlete_code::text = mv.athlete_code::text
+                WHERE mv.rank IS NOT NULL
+                  AND mv.{metric_column} IS NOT NULL
+                  AND COALESCE(prf.total_runs_local_parkruns_1y, 0) >= 5
+                  AND (
+                        mv.{metric_column}::numeric > sr.metric_seconds
+                     OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text > sr.athlete_code)
+                  )
+                ORDER BY mv.{metric_column}::numeric ASC, mv.athlete_code::text ASC
+                LIMIT :below_count
+            ),
+            window_rows AS (
+                SELECT * FROM qualified_above
+                UNION ALL
+                SELECT * FROM selected_row
+                UNION ALL
+                SELECT * FROM qualified_below
             ),
             ordered_rows AS (
                 SELECT
-                    lr.*,
-                    ROUND(lr.latest_rank)::int AS display_rank,
-                    CONCAT(ROUND(lr.latest_rank)::int::text, lr.rank_suffix) AS rank_display,
+                    wr.*,
+                    ROUND(wr.latest_rank)::int AS display_rank,
+                    CONCAT(ROUND(wr.latest_rank)::int::text, wr.rank_suffix) AS rank_display,
                     ROW_NUMBER() OVER (
-                        ORDER BY lr.metric_seconds ASC,
-                                 lr.athlete_code ASC
+                        ORDER BY wr.metric_seconds ASC,
+                                 wr.athlete_code ASC
                     ) AS peer_rn
-                FROM leaderboard_rows lr
+                FROM window_rows wr
             ),
             selected_position AS (
                 SELECT peer_rn AS selected_peer_rn
@@ -2933,8 +2998,6 @@ def get_next_ext_similar():
                 (orw.athlete_code = :athlete_code) AS is_selected
             FROM ordered_rows orw
             CROSS JOIN selected_position sp
-            WHERE orw.peer_rn BETWEEN GREATEST(sp.selected_peer_rn - :above_count, 1)
-                                 AND sp.selected_peer_rn + :below_count
             ORDER BY orw.peer_rn
         """)
 
