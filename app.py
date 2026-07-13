@@ -2832,10 +2832,12 @@ def get_next_ext_similar():
                 SELECT
                     v0.athlete_code::text AS athlete_code
                 FROM {config['table']} v0
+                                LEFT JOIN mv_participant_run_filters prf0
+                                        ON prf0.athlete_code::text = v0.athlete_code::text
                 WHERE v0.rank IS NOT NULL
                   AND v0.{metric_column} IS NOT NULL
+                                    AND COALESCE(prf0.total_runs_local_parkruns_1y, 0) >= 5
                 ORDER BY v0.{metric_column} ASC, v0.athlete_code::text ASC
-                LIMIT 1000
             ),
             leaderboard_athletes AS (
                 SELECT
