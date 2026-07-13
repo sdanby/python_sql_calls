@@ -2859,7 +2859,9 @@ def get_next_ext_similar():
                     latest.current_best_rank_ae::numeric AS current_best_rank_ae,
                     latest.current_best_rank_es::numeric AS current_best_rank_es,
                     latest.current_best_rank_aes::numeric AS current_best_rank_aes,
-                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y,
+                    prf.freq_course_code,
+                    COALESCE(prf.freq_course, '') AS freq_course
                 FROM {config['table']} mv
                 LEFT JOIN latest_rank latest
                     ON latest.athlete_code = mv.athlete_code::text
@@ -2891,7 +2893,9 @@ def get_next_ext_similar():
                     latest.current_best_rank_ae::numeric AS current_best_rank_ae,
                     latest.current_best_rank_es::numeric AS current_best_rank_es,
                     latest.current_best_rank_aes::numeric AS current_best_rank_aes,
-                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y,
+                    prf.freq_course_code,
+                    COALESCE(prf.freq_course, '') AS freq_course
                 FROM {config['table']} mv
                 CROSS JOIN selected_row sr
                 LEFT JOIN latest_rank latest
@@ -2929,7 +2933,9 @@ def get_next_ext_similar():
                     latest.current_best_rank_ae::numeric AS current_best_rank_ae,
                     latest.current_best_rank_es::numeric AS current_best_rank_es,
                     latest.current_best_rank_aes::numeric AS current_best_rank_aes,
-                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y,
+                    prf.freq_course_code,
+                    COALESCE(prf.freq_course, '') AS freq_course
                 FROM {config['table']} mv
                 CROSS JOIN selected_row sr
                 LEFT JOIN latest_rank latest
@@ -2991,8 +2997,8 @@ def get_next_ext_similar():
                 orw.current_best_rank_ae,
                 orw.current_best_rank_es,
                 orw.current_best_rank_aes,
-                NULL::text AS freq_course_code,
-                ''::text AS freq_course,
+                orw.freq_course_code,
+                COALESCE(orw.freq_course, '') AS freq_course,
                 orw.peer_rn,
                 sp.selected_peer_rn,
                 (orw.athlete_code = :athlete_code) AS is_selected
