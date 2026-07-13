@@ -2747,6 +2747,7 @@ def get_next_ext_similar():
         below_count = request.args.get('below', default=10, type=int)
         adj_type_filter = request.args.get('adj_type', default='AE', type=str)
         raw_course_code_filter = request.args.get('course_code', default='', type=str)
+        raw_age_group_filter = request.args.get('age_group', default='', type=str)
 
         above_count = max(0, min(50, above_count if above_count is not None else 10))
         below_count = max(0, min(50, below_count if below_count is not None else 10))
@@ -2767,6 +2768,17 @@ def get_next_ext_similar():
                 course_code_values.append(normalized_value)
         course_codes_csv = ','.join(course_code_values)
         course_filter_count = len(course_code_values)
+
+        age_group_values = []
+        seen_age_groups = set()
+        for raw_value in str(raw_age_group_filter or '').split(','):
+            normalized_value = raw_value.strip().upper()
+            if not normalized_value or normalized_value == 'ALL' or normalized_value in seen_age_groups:
+                continue
+            seen_age_groups.add(normalized_value)
+            age_group_values.append(normalized_value)
+        age_groups_csv = ','.join(age_group_values)
+        age_group_filter_count = len(age_group_values)
 
         mv_metric_config = {
             'B': {
@@ -2922,6 +2934,10 @@ def get_next_ext_similar():
                             OR mv.event_code::text = ANY(string_to_array(:course_codes_csv, ','))
                             OR COALESCE(prf.freq_course_code, '') = ANY(string_to_array(:course_codes_csv, ','))
                         )
+                        AND (
+                                :age_group_filter_count = 0
+                            OR UPPER(COALESCE(NULLIF(BTRIM(mv.age_group), ''), '')) = ANY(string_to_array(:age_groups_csv, ','))
+                        )
                   AND (
                         mv.{metric_column}::numeric < sr.metric_seconds
                      OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text < sr.athlete_code)
@@ -2966,6 +2982,10 @@ def get_next_ext_similar():
                                 :course_filter_count = 0
                             OR mv.event_code::text = ANY(string_to_array(:course_codes_csv, ','))
                             OR COALESCE(prf.freq_course_code, '') = ANY(string_to_array(:course_codes_csv, ','))
+                        )
+                        AND (
+                                :age_group_filter_count = 0
+                            OR UPPER(COALESCE(NULLIF(BTRIM(mv.age_group), ''), '')) = ANY(string_to_array(:age_groups_csv, ','))
                         )
                   AND (
                         mv.{metric_column}::numeric > sr.metric_seconds
@@ -3054,7 +3074,9 @@ def get_next_ext_similar():
                     'below_count': below_count,
                         'side_limit': above_count + below_count,
                     'course_codes_csv': course_codes_csv,
-                    'course_filter_count': course_filter_count
+                    'course_filter_count': course_filter_count,
+                    'age_groups_csv': age_groups_csv,
+                    'age_group_filter_count': age_group_filter_count
                 })
                 column_names = result_proxy.keys()
                 rows = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
@@ -3089,6 +3111,7 @@ def get_next_ext_similar():
                     'selectedPreferredExactRank': round(selected_preferred_exact_rank, 1) if selected_preferred_exact_rank is not None else None,
                     'selectedPreferredRankDisplay': selected_preferred_rank_display,
                     'courseCodeFilter': course_code_values if course_code_values else None,
+                    'ageGroupFilter': age_group_values if age_group_values else None,
                         'adjTypeFilter': adj_type_metric,
                         'rows': rows
                 })
