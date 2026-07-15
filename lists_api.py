@@ -290,82 +290,203 @@ def get_fastest_runs_by_athlete():
 
 @lists_bp.route('/api/lists/event_summary', methods=['GET'])
 def get_event_summary_by_code():
-        """Return event summary leaderboard for a specific event_code."""
-        from app import db
+    """Return event summary leaderboard for a specific event_code."""
+    from app import db
+
+    def relation_exists(relation_name):
+        exists_sql = text("SELECT to_regclass(:relation_name) IS NOT NULL")
+        return bool(db.session.execute(exists_sql, {'relation_name': relation_name}).scalar())
+
+    try:
+        event_code_raw = request.args.get('event_code', type=str)
+        if event_code_raw is None:
+            return jsonify({"error": "event_code is required"}), 400
 
         try:
-                event_code_raw = request.args.get('event_code', type=str)
-                if event_code_raw is None:
-                        return jsonify({"error": "event_code is required"}), 400
+            event_code = int(event_code_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "event_code must be an integer"}), 400
 
-                try:
-                        event_code = int(event_code_raw)
-                except (TypeError, ValueError):
-                        return jsonify({"error": "event_code must be an integer"}), 400
+        if event_code < 1:
+            return jsonify({"error": "event_code must be >= 1"}), 400
 
-                if event_code < 1:
-                        return jsonify({"error": "event_code must be >= 1"}), 400
+        try:
+            limit = int(request.args.get('limit', 250))
+        except (TypeError, ValueError):
+            limit = 250
+        if limit < 1:
+            limit = 1
+        elif limit > 1000:
+            limit = 1000
 
-                try:
-                        limit = int(request.args.get('limit', 250))
-                except (TypeError, ValueError):
-                        limit = 250
-                if limit < 1:
-                        limit = 1
-                elif limit > 1000:
-                        limit = 1000
+        if relation_exists('public.mv_event_summary_cache'):
+            sql = text("""
+                SELECT
+                    summary.athlete_code,
+                    summary.name,
+                    age_lookup.age_group,
+                    summary.club,
+                    summary.min_time_mmss,
+                    summary.min_event_adj_mmss,
+                    summary.min_age_event_adj_mmss,
+                    summary.min_age_sex_event_adj_mmss,
+                    summary.appearances,
+                    summary.volunteer_count,
+                    summary.total_count,
+                    summary.best_curve_ranking_current,
+                    summary.best_curve_ranking_historic,
+                    summary.best_curve_ranking_current_type,
+                    summary.last_run_date_ddmmyyyy AS last_run_date,
+                    summary.days_since_last_run,
+                    summary.last_volunteer_date_ddmmyyyy AS last_volunteer_date,
+                    summary.days_since_last_volunteered
+                FROM mv_event_summary_cache summary
+                LEFT JOIN LATERAL (
+                    SELECT er.age_group
+                    FROM mv_extend_runs er
+                    WHERE er.event_code = summary.event_code
+                      AND er.athlete_code = summary.athlete_code
+                      AND er.event_dt IS NOT NULL
+                    ORDER BY er.event_dt DESC
+                    LIMIT 1
+                ) age_lookup ON TRUE
+                WHERE summary.event_code = :event_code
+                ORDER BY summary.total_count DESC, summary.appearances DESC, summary.volunteer_count DESC, summary.athlete_code
+                LIMIT :limit;
+            """)
+        else:
+            sql = text("""
+                WITH base AS (
+                    SELECT
+                        er.event_code,
+                        er.athlete_code,
+                        er.name,
+                        er.club,
+                        er.age_group,
+                        er.time_seconds,
+                        er.event_adj_time_seconds,
+                        er.age_ratio_male,
+                        er.age_ratio_sex,
+                        er.best_curve_ranking_current,
+                        er.best_curve_ranking_historic,
+                        er.best_curve_ranking_current_type,
+                        er.event_dt
+                    FROM mv_extend_runs er
+                    WHERE er.event_code = :event_code
+                      AND er.athlete_code IS NOT NULL
+                      AND er.event_dt IS NOT NULL
+                ),
+                agg AS (
+                    SELECT
+                        event_code,
+                        athlete_code,
+                        MIN(time_seconds) AS min_time_seconds,
+                        MIN(event_adj_time_seconds) AS min_event_adj_time_seconds,
+                        MIN(event_adj_time_seconds / NULLIF(age_ratio_male, 0)) AS min_age_event_adj_time_seconds,
+                        MIN(event_adj_time_seconds / NULLIF(age_ratio_sex, 0)) AS min_age_sex_event_adj_time_seconds,
+                        COUNT(*) AS appearances
+                    FROM base
+                    GROUP BY event_code, athlete_code
+                ),
+                latest_event AS (
+                    SELECT DISTINCT ON (event_code, athlete_code)
+                        event_code,
+                        athlete_code,
+                        name,
+                        club,
+                        age_group,
+                        best_curve_ranking_current,
+                        best_curve_ranking_historic,
+                        best_curve_ranking_current_type,
+                        event_dt AS last_run_date
+                    FROM base
+                    ORDER BY event_code, athlete_code, event_dt DESC
+                ),
+                latest_any_event AS (
+                    SELECT
+                        er.athlete_code,
+                        MAX(er.event_dt) AS last_any_run_date
+                    FROM mv_extend_runs er
+                    WHERE er.athlete_code IS NOT NULL
+                      AND er.event_dt IS NOT NULL
+                    GROUP BY er.athlete_code
+                ),
+                vol_base AS (
+                    SELECT
+                        v.event_code,
+                        v.athlete_code,
+                        CASE
+                            WHEN v.event_date ~ '^\d{2}/\d{2}/\d{4}$' THEN to_date(v.event_date, 'DD/MM/YYYY')
+                            WHEN v.event_date ~ '^\d{4}-\d{2}-\d{2}$' THEN to_date(v.event_date, 'YYYY-MM-DD')
+                            ELSE NULL
+                        END AS vol_dt
+                    FROM volunteers v
+                    WHERE v.event_code = :event_code
+                      AND v.athlete_code IS NOT NULL
+                ),
+                vol_counts AS (
+                    SELECT
+                        event_code,
+                        athlete_code,
+                        COUNT(*) AS volunteer_count,
+                        MAX(vol_dt) AS last_volunteer_date
+                    FROM vol_base
+                    GROUP BY event_code, athlete_code
+                )
+                SELECT
+                    agg.athlete_code,
+                    latest_event.name,
+                    latest_event.age_group,
+                    latest_event.club,
+                    to_char((agg.min_time_seconds::int || ' seconds')::interval, 'FMMI:SS') AS min_time_mmss,
+                    to_char((round(agg.min_event_adj_time_seconds)::int || ' seconds')::interval, 'FMMI:SS') AS min_event_adj_mmss,
+                    to_char((round(agg.min_age_event_adj_time_seconds)::int || ' seconds')::interval, 'FMMI:SS') AS min_age_event_adj_mmss,
+                    to_char((round(agg.min_age_sex_event_adj_time_seconds)::int || ' seconds')::interval, 'FMMI:SS') AS min_age_sex_event_adj_mmss,
+                    agg.appearances,
+                    COALESCE(vol_counts.volunteer_count, 0) AS volunteer_count,
+                    agg.appearances + COALESCE(vol_counts.volunteer_count, 0) AS total_count,
+                    CASE
+                        WHEN latest_any_event.last_any_run_date < (current_date - INTERVAL '1 year') THEN NULL
+                        ELSE latest_event.best_curve_ranking_current
+                    END AS best_curve_ranking_current,
+                    latest_event.best_curve_ranking_historic,
+                    latest_event.best_curve_ranking_current_type,
+                    to_char(latest_event.last_run_date, 'DD/MM/YYYY') AS last_run_date,
+                    (current_date - latest_event.last_run_date) AS days_since_last_run,
+                    to_char(vol_counts.last_volunteer_date, 'DD/MM/YYYY') AS last_volunteer_date,
+                    CASE
+                        WHEN vol_counts.last_volunteer_date IS NULL THEN NULL
+                        ELSE (current_date - vol_counts.last_volunteer_date)
+                    END AS days_since_last_volunteered
+                FROM agg
+                JOIN latest_event
+                  ON latest_event.event_code = agg.event_code
+                 AND latest_event.athlete_code = agg.athlete_code
+                LEFT JOIN latest_any_event
+                  ON latest_any_event.athlete_code = agg.athlete_code
+                LEFT JOIN vol_counts
+                  ON vol_counts.event_code = agg.event_code
+                 AND vol_counts.athlete_code = agg.athlete_code
+                ORDER BY total_count DESC, agg.appearances DESC, volunteer_count DESC, agg.athlete_code
+                LIMIT :limit;
+            """)
 
-                sql = text("""
-                        SELECT
-                            summary.athlete_code,
-                            summary.name,
-                            age_lookup.age_group,
-                            summary.club,
-                            summary.min_time_mmss,
-                            summary.min_event_adj_mmss,
-                            summary.min_age_event_adj_mmss,
-                            summary.min_age_sex_event_adj_mmss,
-                            summary.appearances,
-                            summary.volunteer_count,
-                            summary.total_count,
-                            summary.best_curve_ranking_current,
-                            summary.best_curve_ranking_historic,
-                            summary.best_curve_ranking_current_type,
-                            summary.last_run_date_ddmmyyyy AS last_run_date,
-                            summary.days_since_last_run,
-                            summary.last_volunteer_date_ddmmyyyy AS last_volunteer_date,
-                            summary.days_since_last_volunteered
-                        FROM mv_event_summary_cache summary
-                        LEFT JOIN LATERAL (
-                            SELECT er.age_group
-                            FROM mv_extend_runs er
-                            WHERE er.event_code = summary.event_code
-                              AND er.athlete_code = summary.athlete_code
-                              AND er.event_dt IS NOT NULL
-                            ORDER BY er.event_dt DESC
-                            LIMIT 1
-                        ) age_lookup ON TRUE
-                        WHERE summary.event_code = :event_code
-                        ORDER BY summary.total_count DESC, summary.appearances DESC, summary.volunteer_count DESC, summary.athlete_code
-                        LIMIT :limit;
-                    """)
+        result_proxy = db.session.execute(sql, {'event_code': event_code, 'limit': limit})
+        column_names = result_proxy.keys()
+        results = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
+        db.session.commit()
+        return jsonify(results)
 
-                result_proxy = db.session.execute(sql, {'event_code': event_code, 'limit': limit})
-                column_names = result_proxy.keys()
-                results = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
-                db.session.commit()
-                return jsonify(results)
-
-        except Exception as e:
-                try:
-                        db.session.rollback()
-                except Exception:
-                        pass
-                tb = traceback.format_exc()
-                print(f"Database error in get_event_summary_by_code: {e}\n{tb}")
-                return jsonify({
-                        "error": "Failed to fetch data from the database",
-                        "exception": str(e),
-                        "traceback": tb
-                }), 500
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        tb = traceback.format_exc()
+        print(f"Database error in get_event_summary_by_code: {e}\n{tb}")
+        return jsonify({
+            "error": "Failed to fetch data from the database",
+            "exception": str(e),
+            "traceback": tb
+        }), 500
 
