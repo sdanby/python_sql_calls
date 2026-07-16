@@ -2288,10 +2288,7 @@ def get_club_members():
                 best_age_event_adj_time_seconds,
                 best_age_sex_event_adj_time,
                 best_age_sex_event_adj_time_seconds,
-                CASE
-                    WHEN COALESCE(club_runs_last_year, 0) > 0 THEN best_curve_ranking_current
-                    ELSE NULL
-                END AS best_curve_ranking_current,
+                best_curve_ranking_current,
                 COALESCE(best_curve_ranking_historic, best_curve_ranking_current) AS best_curve_ranking_historic,
                 best_curve_ranking_current_type,
                 total_runs_all_clubs
