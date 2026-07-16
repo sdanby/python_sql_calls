@@ -1,61 +1,19 @@
-# Add missing _require_authenticated_user function
-def _require_authenticated_user():
-    session_token = _extract_bearer_token()
-    _sess, user = _resolve_session(session_token)
-    return _sess, user
-
-from datetime import datetime, timedelta, timezone
-from collections import deque
-from contextlib import redirect_stderr, redirect_stdout
-import json
-import importlib
-import os
-import re
-import socketserver
-import threading
-import time
-import uuid
 from flask import Flask, jsonify, request
-from flask_cors import CORS
-from werkzeug.security import generate_password_hash, check_password_hash
-from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
-
-# NOTE FOR MAINTAINERS:
-# This file is used for local/backend workflows, but the Render-hosted production API is driven
-# by `app.py` (and the Render-linked copy under `python_sql_calls_repo/`).
-# Do not assume changes made only in `backendAPI.py` will affect the live site.
-# If an endpoint, SQL payload, auth flow, or any Python/Postgres API response needs to change
-# for production, make that change in `app.py` first and keep the Render-linked repo in sync.
-
-app = Flask(__name__)
-CORS(app, origins=["http://localhost:3000"])   # production: use exact origins
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    # If you send credentials from client:
-    # response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
-from database import connections,update_parkrun_events,fetch_coefficients_for_all_events,get_most_recent_date_with_coeff_not_one
-from process import process_event_url,process_parkrun_history
-from scraper import create_webdriver
-from consistency import fetch_data, fetch_max_position, create_table, get_parkrun_data
-from sqlalchemy import text, inspect
-from dateutil.parser import parse as parse_date
-from analytics import fetch_event_data,get_transformed_event_data, optimize_event_times_logic, coeffStartDate as get_coeff_start_date,normalize_coefficients, check_and_update_events, update_eligible_times_for_all_weeks,timeToSeconds
-from parkrunAPI import parkrun_api
-from lists_api import lists_bp
-
-
-import logging
-
-
-# Set Flask logging level to ERROR
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
+from flask_cors import CORS  # Make sure to import CORS
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import Date
+from datetime import datetime, timezone
+from sqlalchemy import func
+from sqlalchemy import text # Import text from SQLAlchemy
+from sqlalchemy import inspect
+from lists_api import lists_bp, get_adjustment_fields_sql 
+import traceback
+import importlib
+import re
+import os
+import uuid
+from werkzeug.security import generate_password_hash, check_password_hash
+#from consistency import get_parkrun_data
 
 try:
     id_token = importlib.import_module('google.oauth2.id_token')
@@ -65,18 +23,156 @@ except Exception:
     google_requests = None
 
 app = Flask(__name__)
-app.register_blueprint(parkrun_api)
-app.register_blueprint(lists_bp)
-#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///processing_status.db'
-#app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-database_url = os.getenv('DATABASE_URL') or os.getenv('RENDER_POSTGRES_URL')
-if database_url and database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql://', 1)
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:///C:/Users/stevi/flask-backend/myapp/parkrun.db'
+CORS(app)  # Enable CORS for all routes
+
+# Replace the following credentials with your actual database credentials
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://parkrundata_user:m3UE0JWilwRNS1MBVgN2kr0BnIOVZUmH@dpg-cs2r25dsvqrc73dpgdd0-a.frankfurt-postgres.render.com:5432/parkrundata'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+
+# Add these engine options to manage the connection pool
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 10,
+    'pool_recycle': 280,
+    'pool_pre_ping': True
+}
+
 db = SQLAlchemy(app)
 
-CORS(app)
+
+def _normalize_athlete_code(value):
+    normalized = str(value or '').strip()
+    return normalized or None
+
+
+def _resolve_athlete_code(value):
+    athlete_code = _normalize_athlete_code(value)
+    if not athlete_code:
+        return None
+    row = db.session.execute(
+        text("""
+            SELECT CAST(athlete_code AS TEXT) AS athlete_code
+            FROM athletes
+            WHERE CAST(athlete_code AS TEXT) = :athlete_code
+            LIMIT 1
+        """),
+        {'athlete_code': athlete_code}
+    ).fetchone()
+    return athlete_code if row else None
+
+# Add this block to automatically close sessions
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    db.session.remove()
+
+# 4. Register the blueprint with your main app
+app.register_blueprint(lists_bp)
+
+class ProcessingStatus(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    status = db.Column(db.String(10), nullable=False)
+    updated_at = db.Column(db.DateTime, server_default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
+class Event(db.Model):
+    __tablename__ = 'events'
+    event_code = db.Column(db.Integer, primary_key=True)
+    event_name = db.Column(db.String, nullable=False)
+    display_name = db.Column(db.String, nullable=False)
+
+class EventPosition(db.Model):
+    __tablename__ = 'eventpositions'
+    event_code = db.Column(db.Integer, db.ForeignKey('events.event_code'), primary_key=True)
+    event_date = db.Column(db.String, primary_key=True)
+    position = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String)
+    male_position = db.Column(db.Integer)
+    male_count = db.Column(db.Integer)
+    age_group = db.Column(db.String)
+    age_grade = db.Column(db.String)
+    time = db.Column(db.String)
+    club = db.Column(db.String)
+    comment = db.Column(db.String)
+    athlete_code = db.Column(db.String)
+    event_eligible_appearances = db.Column(db.Integer)
+    time_ratio= db.Column(db.Float)
+    adj_time_seconds= db.Column(db.Float)
+    adj_time_ratio= db.Column(db.Float)
+    event_code_count= db.Column(db.Integer)
+    tourist_flag=db.Column(db.String)
+    last_event_code_count= db.Column(db.Integer)
+    age_ratio_male= db.Column(db.Float)
+    age_ratio_sex= db.Column(db.Float)
+    super_tourist= db.Column(db.Integer)
+    local_time_ratio= db.Column(db.Float)
+    adj2_time_seconds= db.Column(db.Float)
+    adj2_time_ratio= db.Column(db.Float)
+    distinct_courses_long= db.Column(db.Integer)
+    last_event_code_count_long= db.Column(db.Integer)
+    total_runs_long= db.Column(db.Integer)
+    regular=db.Column(db.String)
+    returner=db.Column(db.String)
+    super_returner=db.Column(db.String)
+    best_curve_ranking_current= db.Column(db.Integer)
+    best_curve_ranking_historic= db.Column(db.Integer)
+    best_curve_ranking_current_type= db.Column(db.String)
+    event_rank_b = db.Column(db.Float)
+    event_rank_e = db.Column(db.Float)
+    event_rank_es = db.Column(db.Float)
+    event_rank_ae = db.Column(db.Float)
+    event_rank_aes = db.Column(db.Float)
+
+class ParkrunEvent(db.Model):
+    __tablename__ = 'parkrun_events'
+    event_code = db.Column(db.Integer, primary_key=True)
+    event_date = db.Column(db.String, nullable=False)  # Use String for storing date
+    last_position = db.Column(db.Integer)
+    volunteers = db.Column(db.Integer)
+    event_number = db.Column(db.Integer,primary_key=True)
+    coeff = db.Column(db.Float)
+    obs = db.Column(db.Integer)
+    coeff_event = db.Column(db.Float)
+    avg_time = db.Column(db.Float)
+    avgtimelim12 = db.Column(db.Float)
+    avgtimelim5 = db.Column(db.Float)
+    tourist_count = db.Column(db.Integer)
+    super_tourist_count = db.Column(db.Integer)
+    regulars = db.Column(db.Integer)
+    avg_age = db.Column(db.Float)
+    first_timers_count = db.Column(db.Integer)
+    returners_count = db.Column(db.Integer)
+    club_count = db.Column(db.Integer)
+    pb_count = db.Column(db.Integer)
+    recentbest_count = db.Column(db.Integer)
+    eligible_time_count = db.Column(db.Integer)
+    unknown_count = db.Column(db.Integer)
+    super_returner_count= db.Column(db.Integer)
+
+    def to_dict(self):
+       return {
+            'event_code': self.event_code,
+            'event_date': self.event_date,  # Return the string directly
+            'last_position': self.last_position,
+            'volunteers': self.volunteers,
+            'event_number' : self.event_number,
+            'coeff' : self.coeff,
+            'obs' : self.obs,
+            'coeff_event' : self.coeff_event,
+            'avg_time' : self.avg_time,            
+            'avgtimelim12' : self.avgtimelim12,           
+            'avgtimelim5' : self.avgtimelim5,
+            'tourist_count' : self.tourist_count,
+            'super_tourist_count' : self.tourist_count,
+            'regulars' : self.regulars,
+            'avg_age' : self.avg_age,
+            'first_timers_count' : self.first_timers_count,
+            'returners_count' : self.returners_count,
+            'club_count' : self.club_count,
+            'pb_count' : self.pb_count,
+            'recentbest_count' : self.recentbest_count,
+            'eligible_time_count' : self.eligible_time_count,
+            'unknown_count' : self.unknown_count,
+            'super_returner_count' : self.super_returner_count
+        }
 
 
 class AuthUser(db.Model):
@@ -89,6 +185,7 @@ class AuthUser(db.Model):
     athlete_code = db.Column(db.String(32), nullable=True, index=True)
     default_course_code = db.Column(db.String(32), nullable=True, index=True)
     default_course_name = db.Column(db.String(255), nullable=True)
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime, nullable=True)
 
@@ -151,6 +248,7 @@ class ChatMessage(db.Model):
     athlete_code = db.Column(db.String(32), nullable=True)
     message_text = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 with app.app_context():
@@ -164,6 +262,9 @@ with app.app_context():
     auth_user_columns = {column['name'] for column in inspector.get_columns('auth_users')}
     if 'athlete_code' not in auth_user_columns:
         db.session.execute(text("ALTER TABLE auth_users ADD COLUMN athlete_code VARCHAR(32)"))
+        db.session.commit()
+    if 'is_admin' not in auth_user_columns:
+        db.session.execute(text("ALTER TABLE auth_users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         db.session.commit()
     if 'default_course_code' not in auth_user_columns:
         db.session.execute(text("ALTER TABLE auth_users ADD COLUMN default_course_code VARCHAR(32)"))
@@ -185,31 +286,14 @@ with app.app_context():
         db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN updated_at DATETIME"))
         db.session.execute(text("UPDATE feedback_requests SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"))
         db.session.commit()
+    if 'updated_at' not in feedback_request_columns:
+        db.session.execute(text("ALTER TABLE feedback_requests ADD COLUMN updated_at DATETIME"))
+        db.session.execute(text("UPDATE feedback_requests SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"))
+        db.session.commit()
 
 
 def _normalize_email(value):
     return (value or '').strip().lower()
-
-
-def _normalize_athlete_code(value):
-    normalized = str(value or '').strip()
-    return normalized or None
-
-
-def _resolve_athlete_code(value):
-    athlete_code = _normalize_athlete_code(value)
-    if not athlete_code:
-        return None
-    row = db.session.execute(
-        text("""
-            SELECT CAST(athlete_code AS TEXT) AS athlete_code
-            FROM athletes
-            WHERE CAST(athlete_code AS TEXT) = :athlete_code
-            LIMIT 1
-        """),
-        {'athlete_code': athlete_code}
-    ).fetchone()
-    return athlete_code if row else None
 
 
 def _session_token():
@@ -293,35 +377,6 @@ def _resolve_session(session_token):
     return sess, user
 
 
-def _is_local_request():
-    host = str(request.host or '').split(':', 1)[0].strip().lower()
-    forwarded_for = str(request.headers.get('X-Forwarded-For', '') or '')
-    remote_addr = str(request.remote_addr or '').strip().lower()
-
-    candidate_ips = [remote_addr]
-    candidate_ips.extend(part.strip().lower() for part in forwarded_for.split(',') if part.strip())
-
-    if host in {'localhost', '127.0.0.1'}:
-        return True
-    return any(ip in {'127.0.0.1', '::1', 'localhost'} for ip in candidate_ips)
-
-
-def _weekly_upload_dev_access_enabled():
-    raw_value = str(os.getenv('WEEKLY_UPLOAD_DEV_ACCESS', '1')).strip().lower()
-    return raw_value not in {'0', 'false', 'no', 'off'}
-
-
-def _authorize_weekly_upload_request():
-    if _weekly_upload_dev_access_enabled() and _is_local_request():
-        return None
-    _sess, user = _require_authenticated_user()
-    if user and _is_admin_user(user):
-        return None
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    return jsonify({'error': 'Forbidden'}), 403
-
-
 def _user_payload(user):
     return {
         'id': user.id,
@@ -330,7 +385,7 @@ def _user_payload(user):
         'athleteCode': user.athlete_code,
         'defaultCourseCode': user.default_course_code,
         'defaultCourseName': user.default_course_name,
-        'isAdmin': _is_admin_user(user),
+        'isAdmin': bool(user.is_admin),
         'lastLoginAt': user.last_login_at.isoformat() if user.last_login_at else None,
     }
 
@@ -345,6 +400,26 @@ def _record_login_event(user_id, provider, success):
     )
     db.session.add(evt)
     db.session.commit()
+
+
+def _admin_count():
+    return int(AuthUser.query.filter_by(is_admin=True).count())
+
+
+def _is_admin_bootstrap_open():
+    return _admin_count() == 0
+
+
+def _can_access_admin(user):
+    if not user:
+        return False
+    return bool(user.is_admin) or _is_admin_bootstrap_open()
+
+
+def _require_authenticated_user():
+    session_token = _extract_bearer_token()
+    _sess, user = _resolve_session(session_token)
+    return _sess, user
 
 
 def _feedback_creator_label(row):
@@ -364,6 +439,7 @@ def _feedback_payload(row):
         'title': row.title,
         'details': row.details,
         'dateLogged': (row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
+        'lastUpdated': (row.updated_at or row.created_at or datetime.utcnow()).strftime('%Y-%m-%d'),
         'status': (row.status or 'logged').lower(),
         'createdBy': _feedback_creator_label(row)
     }
@@ -386,1821 +462,10 @@ def _chat_message_payload(row):
     return {
         'id': row.id,
         'messageText': row.message_text,
-        'createdAt': _datetime_to_api_string(row.created_at),
+        'createdAt': row.created_at.isoformat() if row.created_at else None,
         'createdBy': _chat_creator_label(row),
         'athleteCode': str(row.athlete_code or '').strip() or None,
     }
-
-
-def _datetime_to_api_string(value):
-    if not value:
-        return None
-    if value.tzinfo is not None:
-        return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
-    return value.isoformat() + 'Z'
-
-
-def _build_admin_activity_feed(limit, since=None):
-    login_query = AuthLoginEvent.query
-    page_query = PageUsageEvent.query
-
-    if since:
-        login_query = login_query.filter(AuthLoginEvent.created_at >= since)
-        page_query = page_query.filter(PageUsageEvent.created_at >= since)
-
-    login_rows = login_query.order_by(AuthLoginEvent.created_at.desc()).limit(limit).all()
-    page_rows = page_query.order_by(PageUsageEvent.created_at.desc()).limit(limit).all()
-
-    user_ids = {
-        int(row.user_id)
-        for row in list(login_rows) + list(page_rows)
-        if getattr(row, 'user_id', None) is not None
-    }
-    user_map = {}
-    if user_ids:
-        users = AuthUser.query.filter(AuthUser.id.in_(user_ids)).all()
-        user_map = {int(user.id): user for user in users}
-
-    activity = []
-
-    for row in login_rows:
-        user = user_map.get(int(row.user_id)) if row.user_id is not None else None
-        activity.append({
-            'activityType': 'login',
-            'activityAt': _datetime_to_api_string(row.created_at),
-            'userId': int(row.user_id) if row.user_id is not None else None,
-            'email': user.email if user else None,
-            'displayName': user.display_name if user else None,
-            'provider': row.provider,
-            'success': bool(row.success),
-            'pagePath': None,
-            'durationMs': None,
-            'referrerPath': None,
-            'userAgent': row.user_agent,
-            'ipAddress': row.ip_address,
-            '_sortAt': row.created_at or datetime.min
-        })
-
-    for row in page_rows:
-        user = user_map.get(int(row.user_id)) if row.user_id is not None else None
-        sort_at = row.entered_at or row.created_at or datetime.min
-        activity.append({
-            'activityType': 'page_visit',
-            'activityAt': _datetime_to_api_string(sort_at),
-            'userId': int(row.user_id) if row.user_id is not None else None,
-            'email': user.email if user else None,
-            'displayName': user.display_name if user else None,
-            'provider': None,
-            'success': None,
-            'pagePath': row.page_path,
-            'durationMs': int(row.duration_ms) if row.duration_ms is not None else None,
-            'referrerPath': row.referrer_path,
-            'userAgent': row.user_agent,
-            'ipAddress': None,
-            '_sortAt': sort_at
-        })
-
-    activity.sort(key=lambda row: row.get('_sortAt') or datetime.min, reverse=True)
-    trimmed = activity[:limit]
-    for row in trimmed:
-        row.pop('_sortAt', None)
-    return trimmed
-
-
-WEEKLY_UPLOAD_LOG_LIMIT = 600
-_weekly_upload_state_lock = threading.RLock()
-_curve_reference_state_lock = threading.RLock()
-_admin_worker_registry_lock = threading.RLock()
-
-
-def _current_saturday_iso(reference_dt=None):
-    current = reference_dt or datetime.now()
-    start_of_week = current - timedelta(days=current.weekday())
-    saturday = start_of_week + timedelta(days=5)
-    return saturday.strftime('%Y-%m-%d')
-
-
-def _latest_parkrun_saturday_iso(reference_dt=None):
-    current = reference_dt or datetime.now()
-    days_since_saturday = (current.weekday() - 5) % 7
-    saturday = current - timedelta(days=days_since_saturday)
-    return saturday.strftime('%Y-%m-%d')
-
-
-def _coerce_bool(value, default=False):
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in ('1', 'true', 'yes', 'on'):
-        return True
-    if text in ('0', 'false', 'no', 'off'):
-        return False
-    return bool(default)
-
-
-def _coerce_optional_int(value, field_name):
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return int(text)
-    except Exception as exc:
-        raise ValueError(f'{field_name} must be a whole number.') from exc
-
-
-def _default_weekly_sql_pipeline_options():
-    return {
-        'startDate': _current_saturday_iso(),
-        'rebuild': True,
-        'runSqlPipeline': True,
-        'buildAthletes': True,
-        'skipCoeffUpdates': False,
-        'noParkrunPostgres': False,
-        'eventCode': None,
-        'scraper': True,
-        'allAthletes': True,
-        'leaveAthletePostgres': False,
-        'noVolunteers': False,
-        'refreshMaterializedView': True,
-        'rebuildMaterializedViewsFromDefinitions': False,
-        'rebuildHistoricAfterRun': False,
-        'resumeCurveFromStage2': False,
-        'resumeCurveFromAllHistory': False,
-        'forceFreshStart': False,
-    }
-
-
-def _parse_weekly_sql_pipeline_options(raw_options):
-    defaults = _default_weekly_sql_pipeline_options()
-    options = raw_options if isinstance(raw_options, dict) else {}
-    start_date = str(options.get('startDate') or defaults['startDate']).strip()
-
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', start_date):
-        raise ValueError('startDate must be in YYYY-MM-DD format.')
-
-    return {
-        'startDate': start_date,
-        'rebuild': _coerce_bool(options.get('rebuild'), defaults['rebuild']),
-        'runSqlPipeline': _coerce_bool(options.get('runSqlPipeline'), defaults['runSqlPipeline']),
-        'buildAthletes': _coerce_bool(options.get('buildAthletes'), defaults['buildAthletes']),
-        'skipCoeffUpdates': _coerce_bool(options.get('skipCoeffUpdates'), defaults['skipCoeffUpdates']),
-        'noParkrunPostgres': _coerce_bool(options.get('noParkrunPostgres'), defaults['noParkrunPostgres']),
-        'eventCode': _coerce_optional_int(options.get('eventCode'), 'eventCode'),
-        'scraper': _coerce_bool(options.get('scraper'), defaults['scraper']),
-        'allAthletes': _coerce_bool(options.get('allAthletes'), defaults['allAthletes']),
-        'leaveAthletePostgres': _coerce_bool(options.get('leaveAthletePostgres'), defaults['leaveAthletePostgres']),
-        'noVolunteers': _coerce_bool(options.get('noVolunteers'), defaults['noVolunteers']),
-        'refreshMaterializedView': _coerce_bool(options.get('refreshMaterializedView'), defaults['refreshMaterializedView']),
-        'rebuildMaterializedViewsFromDefinitions': _coerce_bool(options.get('rebuildMaterializedViewsFromDefinitions'), defaults['rebuildMaterializedViewsFromDefinitions']),
-        'rebuildHistoricAfterRun': _coerce_bool(options.get('rebuildHistoricAfterRun'), defaults['rebuildHistoricAfterRun']),
-        'resumeCurveFromStage2': _coerce_bool(options.get('resumeCurveFromStage2'), defaults['resumeCurveFromStage2']),
-        'resumeCurveFromAllHistory': _coerce_bool(options.get('resumeCurveFromAllHistory'), defaults['resumeCurveFromAllHistory']),
-        'forceFreshStart': _coerce_bool(options.get('forceFreshStart'), defaults['forceFreshStart']),
-    }
-
-
-def _iso_to_slash_date(iso_date):
-    text_value = str(iso_date or '').strip()
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', text_value):
-        raise ValueError('Date must be in YYYY-MM-DD format.')
-    year, month, day = text_value.split('-')
-    return f'{day}/{month}/{year}'
-
-
-def _delete_uploaded_event_scope(event_code, iso_date):
-    sqlite_conn = None
-    render_db_conn = None
-    deleted = {
-        'sqlite': {'eventpositions': 0, 'parkrunEvents': 0},
-        'postgres': {'eventpositions': 0, 'parkrunEvents': 0}
-    }
-
-    slash_date = _iso_to_slash_date(iso_date)
-
-    try:
-        sqlite_conn, sqlite_cursor, render_db_conn, render_cursor = connections()
-
-        sqlite_cursor.execute(
-            "SELECT COUNT(*) FROM eventpositions WHERE event_code = ? AND (event_date = ? OR (substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)) = ?)",
-            (event_code, slash_date, iso_date)
-        )
-        deleted['sqlite']['eventpositions'] = int((sqlite_cursor.fetchone() or [0])[0] or 0)
-        sqlite_cursor.execute(
-            "DELETE FROM eventpositions WHERE event_code = ? AND (event_date = ? OR (substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)) = ?)",
-            (event_code, slash_date, iso_date)
-        )
-
-        sqlite_cursor.execute(
-            "SELECT COUNT(*) FROM parkrun_events WHERE event_code = ? AND (event_date = ? OR (substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)) = ?)",
-            (event_code, slash_date, iso_date)
-        )
-        deleted['sqlite']['parkrunEvents'] = int((sqlite_cursor.fetchone() or [0])[0] or 0)
-        sqlite_cursor.execute(
-            "DELETE FROM parkrun_events WHERE event_code = ? AND (event_date = ? OR (substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)) = ?)",
-            (event_code, slash_date, iso_date)
-        )
-
-        render_cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM eventpositions
-            WHERE event_code = %s
-              AND (
-                    event_date::text = %s
-                 OR event_date::text = %s
-                 OR CASE
-                        WHEN event_date::text ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_char(to_date(event_date::text, 'DD/MM/YYYY'), 'YYYY-MM-DD')
-                        WHEN event_date::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN event_date::text
-                        ELSE NULL
-                    END = %s
-              )
-            """,
-            (event_code, slash_date, iso_date, iso_date)
-        )
-        deleted['postgres']['eventpositions'] = int((render_cursor.fetchone() or [0])[0] or 0)
-        render_cursor.execute(
-            """
-            DELETE FROM eventpositions
-            WHERE event_code = %s
-              AND (
-                    event_date::text = %s
-                 OR event_date::text = %s
-                 OR CASE
-                        WHEN event_date::text ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_char(to_date(event_date::text, 'DD/MM/YYYY'), 'YYYY-MM-DD')
-                        WHEN event_date::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN event_date::text
-                        ELSE NULL
-                    END = %s
-              )
-            """,
-            (event_code, slash_date, iso_date, iso_date)
-        )
-
-        render_cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM parkrun_events
-            WHERE event_code = %s
-              AND (
-                    event_date::text = %s
-                 OR event_date::text = %s
-                 OR CASE
-                        WHEN event_date::text ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_char(to_date(event_date::text, 'DD/MM/YYYY'), 'YYYY-MM-DD')
-                        WHEN event_date::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN event_date::text
-                        ELSE NULL
-                    END = %s
-              )
-            """,
-            (event_code, slash_date, iso_date, iso_date)
-        )
-        deleted['postgres']['parkrunEvents'] = int((render_cursor.fetchone() or [0])[0] or 0)
-        render_cursor.execute(
-            """
-            DELETE FROM parkrun_events
-            WHERE event_code = %s
-              AND (
-                    event_date::text = %s
-                 OR event_date::text = %s
-                 OR CASE
-                        WHEN event_date::text ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_char(to_date(event_date::text, 'DD/MM/YYYY'), 'YYYY-MM-DD')
-                        WHEN event_date::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN event_date::text
-                        ELSE NULL
-                    END = %s
-              )
-            """,
-            (event_code, slash_date, iso_date, iso_date)
-        )
-
-        sqlite_conn.commit()
-        render_db_conn.commit()
-        return deleted
-    except Exception:
-        if sqlite_conn:
-            try:
-                sqlite_conn.rollback()
-            except Exception:
-                pass
-        if render_db_conn:
-            try:
-                render_db_conn.rollback()
-            except Exception:
-                pass
-        raise
-    finally:
-        if sqlite_conn:
-            try:
-                sqlite_conn.close()
-            except Exception:
-                pass
-        if render_db_conn:
-            try:
-                render_db_conn.close()
-            except Exception:
-                pass
-
-
-_weekly_upload_state = {
-    'running': False,
-    'status': 'idle',
-    'runMode': 'standard',
-    'runToken': 0,
-    'stopRequested': False,
-    'startedAt': None,
-    'finishedAt': None,
-    'totalCourses': 0,
-    'processedCourses': 0,
-    'currentCourse': '',
-    'currentCode': '',
-    'loopEvents': True,
-    'loadHistory': False,
-    'parkrunName': '',
-    'sqlPipelineOptions': _default_weekly_sql_pipeline_options(),
-    'previousSqlRun': None,
-    'error': None,
-    'logs': deque(maxlen=WEEKLY_UPLOAD_LOG_LIMIT)
-}
-
-_curve_reference_state = {
-    'running': False,
-    'status': 'idle',
-    'runToken': 0,
-    'startedAt': None,
-    'finishedAt': None,
-    'referenceDate': '',
-    'error': None,
-    'logs': deque(maxlen=WEEKLY_UPLOAD_LOG_LIMIT)
-}
-
-_admin_worker_registry = {}
-
-WEEKLY_SQL_HISTORY_FILE = os.path.join(os.path.dirname(__file__), 'curve_progress', 'weekly_sql_history.json')
-WEEKLY_SQL_STAGE_HISTORY_DEFINITIONS = (
-    {'id': 'setup', 'completePatterns': ('[timing] process.full_pipeline.sql_pipeline:',)},
-    {'id': 'scraper', 'completePatterns': ('[timing] process.full_pipeline.scraper:',)},
-    {'id': 'athletes', 'completePatterns': ('[timing] process.full_pipeline.copy_athletes:',)},
-    {'id': 'curve-stage-1', 'completePatterns': ('[curved_ranks][timing] weekly.stage1:', '[curved_ranks][timing] pipeline.stage1:',)},
-    {'id': 'curve-stage-2-build', 'completePatterns': ('[curved_ranks][timing] weekly.stage2.current_snapshot:', '[curved_ranks][timing] stage2.build (',)},
-    {'id': 'curve-all-history-reference', 'completePatterns': ('[curved_ranks][timing] weekly.curve_time_ranks_reference.rebuild_all_history:', '[curved_ranks] reusing existing all-history curve_time_ranks_reference for weekly athlete history build',)},
-    {'id': 'curve-athlete-history', 'completePatterns': ('[curved_ranks][timing] curve_athlete_best_rank_history.fast_build',)},
-    {'id': 'curve-history-sync', 'completePatterns': ('[timing] process.full_pipeline.curve_rank_updates_with_copy:', '[timing] process.resume_curve_stage2.curve_rank_updates_from_stage2', '[timing] process.resume_curve.curve_rank_updates_from_all_history',)},
-    {'id': 'verify-summary', 'completePatterns': ('[timing] process.full_pipeline.curve_rank_range_summary_upload:',)},
-    {'id': 'copy-results', 'completePatterns': ('[timing] process.full_pipeline.copy_parkrun_events:',)},
-    {'id': 'mv-backup', 'completePatterns': ('[mv-backup] saved', '[mv-backup] no materialized views found for schema')},
-    {'id': 'mv-refresh-foundation', 'completePatterns': ('refreshed mv_participant_run_filters in',)},
-    {'id': 'mv-refresh-current', 'completePatterns': ('refreshed mv_best_curve in',)},
-    {'id': 'mv-refresh-1y', 'completePatterns': ('refreshed mv_best_1y_curve in',)},
-    {'id': 'mv-refresh-caches', 'completePatterns': ('refreshed mv_club_members_cache in', 'materialized views refreshed successfully.')},
-    {'id': 'finish', 'completePatterns': ('completed weekly sql pipeline run.',)},
-)
-
-
-def _weekly_sql_scope_key(start_date, event_code):
-    start_part = str(start_date or '').strip()
-    event_part = 'all' if event_code is None or str(event_code).strip() == '' else str(event_code).strip()
-    return f'{start_part}|{event_part}'
-
-
-def _weekly_sql_history_summary_for_logs(options, status, logs, started_at=None, finished_at=None, error=None):
-    start_date = str((options or {}).get('startDate') or '').strip()
-    if not start_date:
-        return None
-    event_code = (options or {}).get('eventCode')
-    stage_completed_at = {}
-    completed_stage_ids = []
-    normalized_logs = list(logs or [])
-
-    for definition in WEEKLY_SQL_STAGE_HISTORY_DEFINITIONS:
-        matched_at = None
-        for entry in reversed(normalized_logs):
-            message = str((entry or {}).get('message') or '').lower()
-            if any(pattern.lower() in message for pattern in definition['completePatterns']):
-                matched_at = (entry or {}).get('at')
-                break
-        if matched_at:
-            stage_completed_at[definition['id']] = matched_at
-            completed_stage_ids.append(definition['id'])
-
-    auto_resume_mode = None
-    if 'finish' not in completed_stage_ids:
-        if any(stage_id in completed_stage_ids for stage_id in ('curve-all-history-reference', 'curve-athlete-history', 'curve-history-sync')):
-            auto_resume_mode = 'allHistory'
-        elif 'curve-stage-1' in completed_stage_ids:
-            auto_resume_mode = 'stage2'
-
-    last_message = ''
-    if normalized_logs:
-        last_message = str((normalized_logs[-1] or {}).get('message') or '')
-
-    return {
-        'scopeKey': _weekly_sql_scope_key(start_date, event_code),
-        'startDate': start_date,
-        'eventCode': event_code,
-        'status': str(status or 'idle'),
-        'startedAt': started_at,
-        'finishedAt': finished_at,
-        'error': error,
-        'updatedAt': datetime.utcnow().isoformat() + 'Z',
-        'completedStageIds': completed_stage_ids,
-        'stageCompletedAt': stage_completed_at,
-        'lastMessage': last_message,
-        'autoResumeMode': auto_resume_mode,
-    }
-
-
-def _load_weekly_sql_history():
-    try:
-        with open(WEEKLY_SQL_HISTORY_FILE, 'r', encoding='utf-8') as handle:
-            data = json.load(handle)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _save_weekly_sql_history(data):
-    try:
-        os.makedirs(os.path.dirname(WEEKLY_SQL_HISTORY_FILE), exist_ok=True)
-        temp_path = WEEKLY_SQL_HISTORY_FILE + '.tmp'
-        with open(temp_path, 'w', encoding='utf-8') as handle:
-            json.dump(data, handle, ensure_ascii=True, indent=2)
-        os.replace(temp_path, WEEKLY_SQL_HISTORY_FILE)
-    except Exception:
-        pass
-
-
-def _get_weekly_sql_history_summary(options):
-    start_date = str((options or {}).get('startDate') or '').strip()
-    if not start_date:
-        return None
-    event_code = (options or {}).get('eventCode')
-    history = _load_weekly_sql_history()
-    return history.get(_weekly_sql_scope_key(start_date, event_code))
-
-
-def _persist_weekly_sql_history_summary(summary):
-    if not summary or not summary.get('scopeKey'):
-        return
-    history = _load_weekly_sql_history()
-    history[str(summary['scopeKey'])] = summary
-    _save_weekly_sql_history(history)
-
-
-def _weekly_sql_history_summary_from_state_locked():
-    if str(_weekly_upload_state.get('runMode') or 'standard') != 'sqlPipeline':
-        return None
-    options = dict(_weekly_upload_state.get('sqlPipelineOptions') or {})
-    return _weekly_sql_history_summary_for_logs(
-        options=options,
-        status=_weekly_upload_state.get('status'),
-        logs=list(_weekly_upload_state.get('logs') or []),
-        started_at=_weekly_upload_state.get('startedAt'),
-        finished_at=_weekly_upload_state.get('finishedAt'),
-        error=_weekly_upload_state.get('error'),
-    )
-
-
-def _is_admin_user(user):
-    if not user:
-        return False
-    admin_value = getattr(user, 'is_admin', None)
-    # Local legacy schemas may not yet expose `is_admin`; treat authenticated users as admin there.
-    if admin_value is None:
-        return True
-    return bool(admin_value)
-
-
-def _weekly_upload_log(message, level='info', event_code=None, event_name=None, athletes=None, volunteers=None, run_token=None):
-    entry = {
-        'at': datetime.utcnow().isoformat() + 'Z',
-        'level': str(level or 'info').lower(),
-        'message': str(message or ''),
-        'eventCode': str(event_code) if event_code is not None else '',
-        'eventName': str(event_name) if event_name is not None else '',
-        'athletes': int(athletes) if athletes is not None and str(athletes).isdigit() else None,
-        'volunteers': int(volunteers) if volunteers is not None and str(volunteers).isdigit() else None,
-    }
-    sql_history_summary = None
-    with _weekly_upload_state_lock:
-        if run_token is not None and int(_weekly_upload_state.get('runToken') or 0) != int(run_token):
-            return
-        _weekly_upload_state['logs'].append(entry)
-        sql_history_summary = _weekly_sql_history_summary_from_state_locked()
-    if sql_history_summary is not None:
-        _persist_weekly_sql_history_summary(sql_history_summary)
-
-
-class _WeeklyUploadLogStream:
-    def __init__(self, level='info', run_token=None):
-        self.level = str(level or 'info').lower()
-        self.run_token = run_token
-        self._buffer = ''
-
-    def write(self, data):
-        text = str(data or '')
-        if not text:
-            return 0
-        self._buffer += text
-        while '\n' in self._buffer:
-            line, self._buffer = self._buffer.split('\n', 1)
-            line = line.strip('\r').strip()
-            if line and not _is_local_request_log_line(line):
-                _weekly_upload_log(line, level=self.level, run_token=self.run_token)
-        return len(text)
-
-    def flush(self):
-        line = self._buffer.strip('\r').strip()
-        if line and not _is_local_request_log_line(line):
-            _weekly_upload_log(line, level=self.level, run_token=self.run_token)
-        self._buffer = ''
-
-
-def _weekly_upload_reset_state_locked(next_status='idle', error=None):
-    _weekly_upload_state['running'] = False
-    _weekly_upload_state['status'] = next_status
-    _weekly_upload_state['stopRequested'] = False
-    _weekly_upload_state['finishedAt'] = datetime.utcnow().isoformat() + 'Z'
-    _weekly_upload_state['currentCourse'] = ''
-    _weekly_upload_state['currentCode'] = ''
-    _weekly_upload_state['error'] = error
-
-
-def _weekly_upload_clear_view_state_locked():
-    _weekly_upload_state['running'] = False
-    _weekly_upload_state['status'] = 'idle'
-    _weekly_upload_state['runMode'] = 'standard'
-    _weekly_upload_state['stopRequested'] = False
-    _weekly_upload_state['startedAt'] = None
-    _weekly_upload_state['finishedAt'] = None
-    _weekly_upload_state['totalCourses'] = 0
-    _weekly_upload_state['processedCourses'] = 0
-    _weekly_upload_state['currentCourse'] = ''
-    _weekly_upload_state['currentCode'] = ''
-    _weekly_upload_state['loopEvents'] = True
-    _weekly_upload_state['loadHistory'] = False
-    _weekly_upload_state['parkrunName'] = ''
-    _weekly_upload_state['sqlPipelineOptions'] = dict(_default_weekly_sql_pipeline_options())
-    _weekly_upload_state['previousSqlRun'] = None
-    _weekly_upload_state['error'] = None
-    _weekly_upload_state['logs'] = deque(maxlen=WEEKLY_UPLOAD_LOG_LIMIT)
-
-
-def _weekly_upload_snapshot(scope_options=None):
-    acquired = _weekly_upload_state_lock.acquire(timeout=2.0)
-    if not acquired:
-        snapshot = {
-            'running': False,
-            'status': 'unavailable',
-            'runMode': 'standard',
-            'stopRequested': False,
-            'startedAt': None,
-            'finishedAt': None,
-            'totalCourses': 0,
-            'processedCourses': 0,
-            'currentCourse': '',
-            'currentCode': '',
-            'loopEvents': True,
-            'loadHistory': False,
-            'parkrunName': '',
-            'sqlPipelineOptions': dict(_default_weekly_sql_pipeline_options()),
-            'previousSqlRun': None,
-            'error': 'Weekly upload state lock timed out. Reset the weekly SQL pipeline state or restart the local backend.',
-            'logs': [],
-            'currentCourseElapsedSeconds': 0,
-            'isStalled': True,
-        }
-    else:
-        try:
-            state_previous_sql_run = _weekly_upload_state.get('previousSqlRun')
-            snapshot = {
-                'running': bool(_weekly_upload_state['running']),
-                'status': str(_weekly_upload_state['status'] or 'idle'),
-                'runMode': str(_weekly_upload_state.get('runMode') or 'standard'),
-                'stopRequested': bool(_weekly_upload_state.get('stopRequested')),
-                'startedAt': _weekly_upload_state['startedAt'],
-                'finishedAt': _weekly_upload_state['finishedAt'],
-                'totalCourses': int(_weekly_upload_state['totalCourses'] or 0),
-                'processedCourses': int(_weekly_upload_state['processedCourses'] or 0),
-                'currentCourse': str(_weekly_upload_state['currentCourse'] or ''),
-                'currentCode': str(_weekly_upload_state['currentCode'] or ''),
-                'loopEvents': bool(_weekly_upload_state['loopEvents']),
-                'loadHistory': bool(_weekly_upload_state['loadHistory']),
-                'parkrunName': str(_weekly_upload_state['parkrunName'] or ''),
-                'sqlPipelineOptions': dict(_weekly_upload_state.get('sqlPipelineOptions') or _default_weekly_sql_pipeline_options()),
-                'previousSqlRun': state_previous_sql_run,
-                'error': _weekly_upload_state['error'],
-                'logs': list(_weekly_upload_state['logs'])
-            }
-            current_started_at = _weekly_upload_state.get('currentCourseStartedAt')
-            if snapshot['running'] and current_started_at:
-                elapsed = max(0, int(time.time() - float(current_started_at)))
-                snapshot['currentCourseElapsedSeconds'] = elapsed
-                snapshot['isStalled'] = elapsed >= int(os.getenv('WEEKLY_UPLOAD_STALL_SECONDS', '300'))
-            else:
-                snapshot['currentCourseElapsedSeconds'] = 0
-                snapshot['isStalled'] = False
-        finally:
-            _weekly_upload_state_lock.release()
-    if scope_options:
-        requested_key = _weekly_sql_scope_key(scope_options.get('startDate'), scope_options.get('eventCode'))
-        if not snapshot.get('previousSqlRun') or str(snapshot['previousSqlRun'].get('scopeKey') or '') != requested_key:
-            snapshot['previousSqlRun'] = _get_weekly_sql_history_summary(scope_options)
-    return snapshot
-
-
-def _prune_admin_worker_registry_locked():
-    inactive_keys = []
-    for registry_key, metadata in _admin_worker_registry.items():
-        worker = metadata.get('thread')
-        if worker is None or not worker.is_alive():
-            inactive_keys.append(registry_key)
-    for registry_key in inactive_keys:
-        _admin_worker_registry.pop(registry_key, None)
-
-
-def _register_admin_worker(worker_type, run_token, worker, label=''):
-    registry_key = f'{str(worker_type)}:{int(run_token)}'
-    with _admin_worker_registry_lock:
-        _prune_admin_worker_registry_locked()
-        _admin_worker_registry[registry_key] = {
-            'type': str(worker_type),
-            'runToken': int(run_token),
-            'thread': worker,
-            'label': str(label or ''),
-            'startedAt': datetime.utcnow().isoformat() + 'Z',
-        }
-
-
-def _unregister_admin_worker(worker_type, run_token):
-    registry_key = f'{str(worker_type)}:{int(run_token)}'
-    with _admin_worker_registry_lock:
-        _admin_worker_registry.pop(registry_key, None)
-        _prune_admin_worker_registry_locked()
-
-
-def _active_admin_worker_summaries():
-    with _admin_worker_registry_lock:
-        _prune_admin_worker_registry_locked()
-        summaries = []
-        for metadata in _admin_worker_registry.values():
-            worker = metadata.get('thread')
-            summaries.append({
-                'type': str(metadata.get('type') or ''),
-                'runToken': int(metadata.get('runToken') or 0),
-                'label': str(metadata.get('label') or ''),
-                'startedAt': metadata.get('startedAt'),
-                'alive': bool(worker and worker.is_alive()),
-            })
-        return summaries
-
-
-def _background_jobs_running_error():
-    active_workers = _active_admin_worker_summaries()
-    if not active_workers:
-        return None
-    parts = []
-    for worker in active_workers:
-        worker_type = str(worker.get('type') or 'worker')
-        label = str(worker.get('label') or '').strip()
-        parts.append(f'{worker_type}{f" ({label})" if label else ""}')
-    joined = ', '.join(parts)
-    return {
-        'error': f'Another admin background job is still running: {joined}. Wait for it to finish or restart the local backend before starting a new process.',
-        'backgroundJobs': active_workers,
-    }
-
-
-class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
-    daemon_threads = True
-
-
-class _QuietWSGIRequestHandler(WSGIRequestHandler):
-    def log_message(self, format, *args):
-        return
-
-
-def _is_local_request_log_line(message):
-    text = str(message or '').strip()
-    return bool(re.match(r'^(127\.0\.0\.1|localhost)\s+-\s+-\s+\[', text, flags=re.IGNORECASE))
-
-
-def _curve_reference_log(message, level='info', run_token=None):
-    entry = {
-        'at': datetime.utcnow().isoformat() + 'Z',
-        'level': str(level or 'info').lower(),
-        'message': str(message or ''),
-        'eventCode': '',
-        'eventName': '',
-        'athletes': None,
-        'volunteers': None,
-    }
-    with _curve_reference_state_lock:
-        if run_token is not None and int(_curve_reference_state.get('runToken') or 0) != int(run_token):
-            return
-        _curve_reference_state['logs'].append(entry)
-
-
-class _CurveReferenceLogStream:
-    def __init__(self, level='info', run_token=None):
-        self.level = str(level or 'info').lower()
-        self.run_token = run_token
-        self._buffer = ''
-
-    def write(self, data):
-        text = str(data or '')
-        if not text:
-            return 0
-        self._buffer += text
-        while '\n' in self._buffer:
-            line, self._buffer = self._buffer.split('\n', 1)
-            line = line.strip('\r').strip()
-            if line and not _is_local_request_log_line(line):
-                _curve_reference_log(line, level=self.level, run_token=self.run_token)
-        return len(text)
-
-    def flush(self):
-        line = self._buffer.strip('\r').strip()
-        if line and not _is_local_request_log_line(line):
-            _curve_reference_log(line, level=self.level, run_token=self.run_token)
-        self._buffer = ''
-
-
-def _curve_reference_reset_state_locked(next_status='idle', error=None):
-    _curve_reference_state['running'] = False
-    _curve_reference_state['status'] = next_status
-    _curve_reference_state['finishedAt'] = datetime.utcnow().isoformat() + 'Z'
-    _curve_reference_state['error'] = error
-
-
-def _curve_reference_clear_view_state_locked():
-    _curve_reference_state['running'] = False
-    _curve_reference_state['status'] = 'idle'
-    _curve_reference_state['startedAt'] = None
-    _curve_reference_state['finishedAt'] = None
-    _curve_reference_state['referenceDate'] = ''
-    _curve_reference_state['error'] = None
-    _curve_reference_state['logs'] = deque(maxlen=WEEKLY_UPLOAD_LOG_LIMIT)
-
-
-def _curve_reference_snapshot():
-    acquired = _curve_reference_state_lock.acquire(timeout=2.0)
-    if not acquired:
-        return {
-            'running': False,
-            'status': 'unavailable',
-            'referenceDate': '',
-            'startedAt': None,
-            'finishedAt': None,
-            'error': 'Curve reference state lock timed out. Reset the curve reference task state or restart the local backend.',
-            'logs': []
-        }
-
-    try:
-        return {
-            'running': bool(_curve_reference_state['running']),
-            'status': str(_curve_reference_state.get('status') or 'idle'),
-            'referenceDate': str(_curve_reference_state.get('referenceDate') or ''),
-            'startedAt': _curve_reference_state.get('startedAt'),
-            'finishedAt': _curve_reference_state.get('finishedAt'),
-            'error': _curve_reference_state.get('error'),
-            'logs': list(_curve_reference_state.get('logs') or [])
-        }
-    finally:
-        _curve_reference_state_lock.release()
-
-
-def _run_curve_reference_publish_task(reference_date, run_token):
-    try:
-        from curved_ranks import run_curve_time_ranks_reference_one_off
-    except Exception as exc:
-        _curve_reference_log(f'Unable to import curved_ranks.run_curve_time_ranks_reference_one_off: {exc}', level='error', run_token=run_token)
-        with _curve_reference_state_lock:
-            if int(_curve_reference_state.get('runToken') or 0) == int(run_token):
-                _curve_reference_reset_state_locked(next_status='failed', error=str(exc))
-        return
-
-    stream = _CurveReferenceLogStream(level='info', run_token=run_token)
-    selected_date = str(reference_date or '').strip()
-    selected_label = selected_date or 'ALL'
-
-    try:
-        _curve_reference_log(
-            f'Started curve_time_ranks_reference publish run for snapshot={selected_label}.',
-            level='info',
-            run_token=run_token,
-        )
-
-        with redirect_stdout(stream), redirect_stderr(stream):
-            processed = run_curve_time_ranks_reference_one_off(current_date=selected_date or None)
-            print(f"[curve_time_ranks_reference] sqlite one-off build complete: {processed}")
-            upload_result = _upload_curve_time_ranks_reference_to_postgres()
-            print(
-                "[curve_time_ranks_reference] postgres upload complete: "
-                f"version={upload_result['referenceVersion']}, rows={upload_result['rowsUploaded']}"
-            )
-
-        stream.flush()
-        with _curve_reference_state_lock:
-            if int(_curve_reference_state.get('runToken') or 0) == int(run_token):
-                _curve_reference_state['status'] = 'completed'
-                _curve_reference_state['error'] = None
-        _curve_reference_log('Completed curve_time_ranks_reference publish run.', level='success', run_token=run_token)
-    except Exception as exc:
-        stream.flush()
-        _curve_reference_log(f'curve_time_ranks_reference publish failed: {exc}', level='error', run_token=run_token)
-        with _curve_reference_state_lock:
-            if int(_curve_reference_state.get('runToken') or 0) == int(run_token):
-                _curve_reference_state['status'] = 'failed'
-                _curve_reference_state['error'] = str(exc)
-    finally:
-        with _curve_reference_state_lock:
-            if int(_curve_reference_state.get('runToken') or 0) == int(run_token):
-                _curve_reference_reset_state_locked(
-                    next_status=str(_curve_reference_state.get('status') or 'idle'),
-                    error=_curve_reference_state.get('error')
-                )
-        _unregister_admin_worker('curveReferencePublish', run_token)
-
-
-def _fetch_weekly_loop_events(cursor, target_date=None):
-    target_iso = str(target_date or _latest_parkrun_saturday_iso())
-    iso_expr = "substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)"
-
-    cursor.execute(f"""
-        WITH latest_events AS (
-            SELECT event_code, MAX({iso_expr}) AS latest_date
-            FROM parkrun_events
-            GROUP BY event_code
-        )
-        SELECT e.event_code, e.event_name
-        FROM events e
-        LEFT JOIN latest_events le ON le.event_code = e.event_code
-        WHERE le.latest_date IS NULL OR le.latest_date < ?
-        ORDER BY e.event_name
-    """, (target_iso,))
-    return cursor.fetchall()
-
-
-def _latest_event_stats(cursor, event_code):
-    try:
-        cursor.execute('''
-            SELECT event_date, last_position, volunteers, event_number
-            FROM parkrun_events
-            WHERE event_code = ?
-            ORDER BY substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) DESC
-            LIMIT 1
-        ''', (event_code,))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {
-            'eventDate': row[0],
-            'athletes': row[1],
-            'volunteers': row[2],
-            'eventNumber': row[3]
-        }
-    except Exception:
-        return None
-
-
-def _next_event_results_url(cursor, event_code, event_name):
-    try:
-        cursor.execute(
-            '''
-            SELECT MAX(event_number)
-            FROM parkrun_events
-            WHERE event_code = ? AND event_number IS NOT NULL AND event_number < 10000
-            ''',
-            (event_code,)
-        )
-        row = cursor.fetchone()
-        latest_event_number = int(row[0]) if row and row[0] is not None else None
-        if latest_event_number is None:
-            return None
-        next_event_number = latest_event_number + 1
-        return f'https://www.parkrun.org.uk/{str(event_name).lower()}/results/{next_event_number}/'
-    except Exception:
-        return None
-
-
-def _course_has_latest_upload(cursor, event_code, target_date=None):
-    try:
-        iso_expr = "substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)"
-        target_iso = str(target_date or _latest_parkrun_saturday_iso())
-
-        cursor.execute(f"SELECT MAX({iso_expr}) FROM parkrun_events WHERE event_code = ?", (event_code,))
-        course_latest = cursor.fetchone()
-        course_latest_date = course_latest[0] if course_latest else None
-        if not course_latest_date:
-            return False
-
-        return str(course_latest_date) >= target_iso
-    except Exception:
-        return False
-
-
-def _run_weekly_upload_worker(loop_events, load_history, parkrun_name, run_token=None):
-    conn = None
-    render_db_conn = None
-    driver = None
-    had_errors = False
-    previous_human_check_mode = os.getenv('PARKRUN_HUMAN_CHECK_MODE')
-
-    try:
-        os.environ['PARKRUN_HUMAN_CHECK_MODE'] = 'skip'
-        conn, cursor, render_db_conn, render_cursor = connections()
-        driver = create_webdriver()
-
-        if loop_events:
-            target_upload_date = _latest_parkrun_saturday_iso()
-            events = _fetch_weekly_loop_events(cursor, target_upload_date)
-            total = len(events)
-            with _weekly_upload_state_lock:
-                _weekly_upload_state['totalCourses'] = total
-            _weekly_upload_log(f'Started weekly upload for {total} courses targeting {target_upload_date}.', level='info')
-
-            if total == 0:
-                _weekly_upload_log(f'No courses need upload for {target_upload_date}.', level='info')
-
-            for index, event in enumerate(events, start=1):
-                with _weekly_upload_state_lock:
-                    stop_requested = bool(_weekly_upload_state.get('stopRequested'))
-                if stop_requested:
-                    _weekly_upload_log('Weekly upload stop requested. Halting before the next course.', level='warning')
-                    with _weekly_upload_state_lock:
-                        _weekly_upload_state['processedCourses'] = index - 1
-                        _weekly_upload_state['status'] = 'stopped'
-                        _weekly_upload_state['error'] = None
-                    break
-
-                event_code = event[0]
-                event_name = event[1]
-
-                # In weekly latest-results mode, skip courses that already have the target parkrun date.
-                if not load_history and _course_has_latest_upload(cursor, event_code, target_upload_date):
-                    _weekly_upload_log(
-                        f'[{index}/{total}] Skipping {event_name} (already has {target_upload_date}).',
-                        level='info',
-                        event_code=event_code,
-                        event_name=event_name
-                    )
-                    with _weekly_upload_state_lock:
-                        _weekly_upload_state['processedCourses'] = index
-                    continue
-
-                with _weekly_upload_state_lock:
-                    _weekly_upload_state['processedCourses'] = index - 1
-                    _weekly_upload_state['currentCourse'] = str(event_name or '')
-                    _weekly_upload_state['currentCode'] = str(event_code or '')
-
-                _weekly_upload_log(
-                    f'[{index}/{total}] Processing {event_name} (code {event_code})',
-                    level='info',
-                    event_code=event_code,
-                    event_name=event_name
-                )
-
-                try:
-                    if load_history:
-                        process_parkrun_history(driver, cursor, render_cursor, conn, render_db_conn, event_code, event_name)
-                    else:
-                        url = f'https://www.parkrun.org.uk/{str(event_name).lower()}/results/latestresults/'
-                        upload_succeeded = bool(process_event_url(driver, cursor, render_cursor, url, event_code, event_name, conn, render_db_conn))
-
-                        if not upload_succeeded:
-                            fallback_url = _next_event_results_url(cursor, event_code, event_name)
-                            if fallback_url:
-                                _weekly_upload_log(
-                                    f'latestresults failed for {event_name}. Retrying explicit event URL {fallback_url}',
-                                    level='warning',
-                                    event_code=event_code,
-                                    event_name=event_name
-                                )
-                                upload_succeeded = bool(process_event_url(driver, cursor, render_cursor, fallback_url, event_code, event_name, conn, render_db_conn))
-
-                        if not upload_succeeded:
-                            raise RuntimeError('Upload fetch failed for latestresults and explicit next-event URL.')
-
-                    stats = _latest_event_stats(cursor, event_code)
-                    _weekly_upload_log(
-                        f'Completed {event_name}',
-                        level='success',
-                        event_code=event_code,
-                        event_name=event_name,
-                        athletes=stats.get('athletes') if stats else None,
-                        volunteers=stats.get('volunteers') if stats else None
-                    )
-                except Exception as course_exc:
-                    had_errors = True
-                    _weekly_upload_log(
-                        f'Error on {event_name}: {course_exc}',
-                        level='error',
-                        event_code=event_code,
-                        event_name=event_name
-                    )
-
-            with _weekly_upload_state_lock:
-                if _weekly_upload_state.get('status') != 'stopped':
-                    _weekly_upload_state['processedCourses'] = total
-        else:
-            with _weekly_upload_state_lock:
-                _weekly_upload_state['totalCourses'] = 1
-                _weekly_upload_state['processedCourses'] = 0
-                _weekly_upload_state['currentCourse'] = str(parkrun_name or '')
-                _weekly_upload_state['currentCode'] = ''
-
-            _weekly_upload_log(f'Processing single parkrun history: {parkrun_name}', level='info', event_name=parkrun_name)
-            with _weekly_upload_state_lock:
-                stop_requested = bool(_weekly_upload_state.get('stopRequested'))
-            if stop_requested:
-                _weekly_upload_log('Weekly upload stop requested before single-parkrun history load started.', level='warning', event_name=parkrun_name)
-                with _weekly_upload_state_lock:
-                    _weekly_upload_state['status'] = 'stopped'
-                    _weekly_upload_state['error'] = None
-            else:
-                process_parkrun_history(driver, cursor, render_cursor, conn, render_db_conn, None, parkrun_name)
-                with _weekly_upload_state_lock:
-                    _weekly_upload_state['processedCourses'] = 1
-                _weekly_upload_log('Completed single-parkrun history load.', level='success', event_name=parkrun_name)
-
-        if _weekly_upload_state.get('status') != 'stopped':
-            conn.commit()
-            render_db_conn.commit()
-
-        with _weekly_upload_state_lock:
-            if _weekly_upload_state.get('status') != 'stopped':
-                _weekly_upload_state['status'] = 'completed_with_errors' if had_errors else 'completed'
-                _weekly_upload_state['error'] = 'One or more courses failed. See log.' if had_errors else None
-    except Exception as exc:
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        if render_db_conn:
-            try:
-                render_db_conn.rollback()
-            except Exception:
-                pass
-
-        _weekly_upload_log(f'Weekly upload failed: {exc}', level='error')
-        with _weekly_upload_state_lock:
-            _weekly_upload_state['status'] = 'failed'
-            _weekly_upload_state['error'] = str(exc)
-    finally:
-        if previous_human_check_mode is None:
-            os.environ.pop('PARKRUN_HUMAN_CHECK_MODE', None)
-        else:
-            os.environ['PARKRUN_HUMAN_CHECK_MODE'] = previous_human_check_mode
-
-        with _weekly_upload_state_lock:
-            stopped_run = str(_weekly_upload_state.get('status') or '') == 'stopped'
-
-        with _weekly_upload_state_lock:
-            _weekly_upload_state['running'] = False
-            _weekly_upload_state['stopRequested'] = False
-            _weekly_upload_state['finishedAt'] = datetime.utcnow().isoformat() + 'Z'
-            _weekly_upload_state['currentCourse'] = ''
-            _weekly_upload_state['currentCode'] = ''
-
-        if stopped_run:
-            _weekly_upload_log('Weekly upload stopped. The backend process has finished.', level='warning')
-
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        if render_db_conn:
-            try:
-                render_db_conn.close()
-            except Exception:
-                pass
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-        if run_token is not None:
-            _unregister_admin_worker('standard', run_token)
-
-
-def _run_weekly_sql_pipeline_worker(sql_pipeline_options, run_token):
-    try:
-        from newAnalytics import run_simple_sql_loop
-    except Exception as exc:
-        _weekly_upload_log(f'Unable to import newAnalytics.run_simple_sql_loop: {exc}', level='error', run_token=run_token)
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_reset_state_locked(next_status='failed', error=str(exc))
-        return
-
-    stream = _WeeklyUploadLogStream(level='info', run_token=run_token)
-    options = _parse_weekly_sql_pipeline_options(sql_pipeline_options)
-
-    try:
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_state['totalCourses'] = 1
-                _weekly_upload_state['processedCourses'] = 0
-                _weekly_upload_state['currentCourse'] = str(options.get('startDate') or 'run_simple_sql_loop')
-                _weekly_upload_state['currentCode'] = str(options.get('eventCode') or '')
-                _weekly_upload_state['sqlPipelineOptions'] = dict(options)
-
-        _weekly_upload_log(
-            f"Started weekly SQL pipeline run for startDate={options['startDate']}"
-            + (f", eventCode={options['eventCode']}" if options.get('eventCode') is not None else ', eventCode=all'),
-            level='info',
-            run_token=run_token,
-        )
-
-        with redirect_stdout(stream), redirect_stderr(stream):
-            run_simple_sql_loop(
-                start_date=options['startDate'],
-                rebuild=options['rebuild'],
-                run_sql_pipeline=options['runSqlPipeline'],
-                buildAthletes=options['buildAthletes'],
-                skip_coeff_updates=options['skipCoeffUpdates'],
-                no_parkrun_postgres=options['noParkrunPostgres'],
-                event_code=options['eventCode'],
-                Scraper=options['scraper'],
-                all_athletes=options['allAthletes'],
-                leave_athlete_postgres=options['leaveAthletePostgres'],
-                no_volunteers=options['noVolunteers'],
-                refresh_materialized_view=options['refreshMaterializedView'],
-                rebuild_materialized_views_from_definitions=options['rebuildMaterializedViewsFromDefinitions'],
-                rebuild_historic_after_run=options['rebuildHistoricAfterRun'],
-                resume_curve_from_stage2=options['resumeCurveFromStage2'],
-                resume_curve_from_all_history=options['resumeCurveFromAllHistory'],
-            )
-
-        stream.flush()
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_state['processedCourses'] = 1
-                _weekly_upload_state['status'] = 'completed'
-                _weekly_upload_state['error'] = None
-        _weekly_upload_log('Completed weekly SQL pipeline run.', level='success', run_token=run_token)
-    except Exception as exc:
-        stream.flush()
-        _weekly_upload_log(f'Weekly SQL pipeline failed: {exc}', level='error', run_token=run_token)
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_state['status'] = 'failed'
-                _weekly_upload_state['error'] = str(exc)
-                summary = _weekly_sql_history_summary_from_state_locked()
-            else:
-                summary = None
-        if summary is not None:
-            _persist_weekly_sql_history_summary(summary)
-    finally:
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_reset_state_locked(
-                    next_status=str(_weekly_upload_state.get('status') or 'idle'),
-                    error=_weekly_upload_state.get('error')
-                )
-        _unregister_admin_worker('sqlPipeline', run_token)
-
-
-def _ensure_curve_time_ranks_reference_postgres_table(render_cursor):
-    render_cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS curve_time_ranks_reference (
-            metric_type TEXT NOT NULL,
-            curve_rank_group INTEGER NOT NULL,
-            curve_rank_reference_version DATE NOT NULL,
-            min_seconds INTEGER,
-            max_seconds INTEGER,
-            min_time TEXT,
-            max_time TEXT,
-            target_group_cnt DOUBLE PRECISION,
-            actual_group_cnt INTEGER,
-            score_upper DOUBLE PRECISION,
-            score_lower DOUBLE PRECISION,
-            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (metric_type, curve_rank_group, curve_rank_reference_version)
-        )
-        """
-    )
-    render_cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_curve_time_ranks_reference_version
-        ON curve_time_ranks_reference (curve_rank_reference_version DESC, metric_type, curve_rank_group DESC)
-        """
-    )
-
-
-def _upload_curve_time_ranks_reference_to_postgres():
-    sqlite_conn = None
-    render_db_conn = None
-    try:
-        sqlite_conn, sqlite_cursor, render_db_conn, render_cursor = connections()
-        _ensure_curve_time_ranks_reference_postgres_table(render_cursor)
-
-        sqlite_cursor.execute(
-            """
-            SELECT
-                metric_type,
-                curve_rank_group,
-                curve_rank_reference_version,
-                min_seconds,
-                max_seconds,
-                min_time,
-                max_time,
-                target_group_cnt,
-                actual_group_cnt,
-                score_upper,
-                score_lower
-            FROM curve_time_ranks_reference
-            ORDER BY metric_type, curve_rank_group DESC
-            """
-        )
-        columns = [str(col[0]) for col in (sqlite_cursor.description or [])]
-        rows = [dict(zip(columns, row)) for row in sqlite_cursor.fetchall()]
-        if not rows:
-            raise RuntimeError('curve_time_ranks_reference is empty in SQLite after the one-off rebuild.')
-
-        versions = sorted({str(row.get('curve_rank_reference_version') or '').strip() for row in rows if str(row.get('curve_rank_reference_version') or '').strip()})
-        if not versions:
-            raise RuntimeError('curve_time_ranks_reference rows do not contain a curve_rank_reference_version value.')
-        if len(versions) != 1:
-            raise RuntimeError(f'Expected one active SQLite reference version, found {len(versions)}: {versions}')
-
-        reference_version = versions[0]
-        payload_rows = [
-            (
-                row.get('metric_type'),
-                row.get('curve_rank_group'),
-                reference_version,
-                row.get('min_seconds'),
-                row.get('max_seconds'),
-                row.get('min_time'),
-                row.get('max_time'),
-                row.get('target_group_cnt'),
-                row.get('actual_group_cnt'),
-                row.get('score_upper'),
-                row.get('score_lower'),
-            )
-            for row in rows
-        ]
-
-        render_cursor.executemany(
-            """
-            INSERT INTO curve_time_ranks_reference (
-                metric_type,
-                curve_rank_group,
-                curve_rank_reference_version,
-                min_seconds,
-                max_seconds,
-                min_time,
-                max_time,
-                target_group_cnt,
-                actual_group_cnt,
-                score_upper,
-                score_lower
-            )
-            VALUES (%s, %s, CAST(%s AS DATE), %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (metric_type, curve_rank_group, curve_rank_reference_version)
-            DO UPDATE SET
-                min_seconds = EXCLUDED.min_seconds,
-                max_seconds = EXCLUDED.max_seconds,
-                min_time = EXCLUDED.min_time,
-                max_time = EXCLUDED.max_time,
-                target_group_cnt = EXCLUDED.target_group_cnt,
-                actual_group_cnt = EXCLUDED.actual_group_cnt,
-                score_upper = EXCLUDED.score_upper,
-                score_lower = EXCLUDED.score_lower
-            """,
-            payload_rows,
-        )
-        render_db_conn.commit()
-        return {
-            'referenceVersion': reference_version,
-            'rowsUploaded': len(payload_rows),
-        }
-    except Exception:
-        if render_db_conn:
-            try:
-                render_db_conn.rollback()
-            except Exception:
-                pass
-        raise
-    finally:
-        if sqlite_conn:
-            try:
-                sqlite_conn.close()
-            except Exception:
-                pass
-        if render_db_conn:
-            try:
-                render_db_conn.close()
-            except Exception:
-                pass
-
-
-def _run_curve_reference_publish_worker(reference_date, run_token):
-    try:
-        from curved_ranks import run_curve_time_ranks_reference_one_off
-    except Exception as exc:
-        _weekly_upload_log(f'Unable to import curved_ranks.run_curve_time_ranks_reference_one_off: {exc}', level='error', run_token=run_token)
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_reset_state_locked(next_status='failed', error=str(exc))
-        return
-
-    stream = _WeeklyUploadLogStream(level='info', run_token=run_token)
-    selected_date = str(reference_date or '').strip()
-    selected_label = selected_date or 'ALL'
-
-    try:
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_state['totalCourses'] = 1
-                _weekly_upload_state['processedCourses'] = 0
-                _weekly_upload_state['currentCourse'] = selected_label
-                _weekly_upload_state['currentCode'] = 'curve-reference'
-
-        _weekly_upload_log(
-            f'Started curve_time_ranks_reference publish run for snapshot={selected_label}.',
-            level='info',
-            run_token=run_token,
-        )
-
-        with redirect_stdout(stream), redirect_stderr(stream):
-            processed = run_curve_time_ranks_reference_one_off(
-                current_date=selected_date or None,
-            )
-            print(f"[curve_time_ranks_reference] sqlite one-off build complete: {processed}")
-            upload_result = _upload_curve_time_ranks_reference_to_postgres()
-            print(
-                "[curve_time_ranks_reference] postgres upload complete: "
-                f"version={upload_result['referenceVersion']}, rows={upload_result['rowsUploaded']}"
-            )
-
-        stream.flush()
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_state['processedCourses'] = 1
-                _weekly_upload_state['status'] = 'completed'
-                _weekly_upload_state['error'] = None
-        _weekly_upload_log('Completed curve_time_ranks_reference publish run.', level='success', run_token=run_token)
-    except Exception as exc:
-        stream.flush()
-        _weekly_upload_log(f'curve_time_ranks_reference publish failed: {exc}', level='error', run_token=run_token)
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_state['status'] = 'failed'
-                _weekly_upload_state['error'] = str(exc)
-    finally:
-        with _weekly_upload_state_lock:
-            if int(_weekly_upload_state.get('runToken') or 0) == int(run_token):
-                _weekly_upload_reset_state_locked(
-                    next_status=str(_weekly_upload_state.get('status') or 'idle'),
-                    error=_weekly_upload_state.get('error')
-                )
-        _unregister_admin_worker('curveReferencePublish', run_token)
-
-
-@app.route('/api/admin/weekly-upload/status', methods=['GET'])
-def admin_weekly_upload_status():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-    scope_options = None
-    requested_start_date = str(request.args.get('startDate') or '').strip()
-    requested_event_code_raw = str(request.args.get('eventCode') or '').strip()
-    if requested_start_date and re.match(r'^\d{4}-\d{2}-\d{2}$', requested_start_date):
-        requested_event_code = int(requested_event_code_raw) if requested_event_code_raw.isdigit() else None
-        scope_options = {
-            'startDate': requested_start_date,
-            'eventCode': requested_event_code,
-        }
-    return jsonify(_weekly_upload_snapshot(scope_options=scope_options)), 200
-
-
-@app.route('/api/admin/weekly-upload/start', methods=['POST'])
-def admin_weekly_upload_start():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-
-    payload = request.get_json(silent=True) or {}
-    run_mode = str(payload.get('runMode') or 'standard').strip() or 'standard'
-    loop_events = bool(payload.get('loopEvents', True))
-    load_history = bool(payload.get('loadHistory', False))
-    parkrun_name = str(payload.get('parkrunName') or 'default_parkrun').strip() or 'default_parkrun'
-    sql_pipeline_options = _default_weekly_sql_pipeline_options()
-
-    if run_mode == 'sqlPipeline' or run_mode == 'curveReferencePublish':
-        try:
-            sql_pipeline_options = _parse_weekly_sql_pipeline_options(payload.get('sqlPipelineOptions'))
-        except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
-    if run_mode == 'sqlPipeline':
-        matched_previous_sql_run = _get_weekly_sql_history_summary(sql_pipeline_options)
-        if (
-            not sql_pipeline_options.get('forceFreshStart')
-            and not sql_pipeline_options.get('resumeCurveFromStage2')
-            and not sql_pipeline_options.get('resumeCurveFromAllHistory')
-            and matched_previous_sql_run
-            and str(matched_previous_sql_run.get('autoResumeMode') or '') in ('stage2', 'allHistory')
-        ):
-            if str(matched_previous_sql_run.get('autoResumeMode') or '') == 'allHistory':
-                sql_pipeline_options['resumeCurveFromAllHistory'] = True
-            else:
-                sql_pipeline_options['resumeCurveFromStage2'] = True
-    else:
-        matched_previous_sql_run = None
-
-    background_jobs_error = _background_jobs_running_error()
-    if background_jobs_error is not None:
-        return jsonify(background_jobs_error), 409
-
-    current_state = None
-    with _weekly_upload_state_lock:
-        if _weekly_upload_state['running']:
-            current_state = {
-                'running': bool(_weekly_upload_state['running']),
-                'status': str(_weekly_upload_state['status'] or 'running')
-            }
-    if current_state is not None:
-        return jsonify({'error': 'Weekly upload is already running.', 'state': current_state}), 409
-
-    with _weekly_upload_state_lock:
-        _weekly_upload_state['running'] = True
-        _weekly_upload_state['status'] = 'running'
-        _weekly_upload_state['runMode'] = run_mode
-        _weekly_upload_state['runToken'] = int(_weekly_upload_state.get('runToken') or 0) + 1
-        _weekly_upload_state['stopRequested'] = False
-        _weekly_upload_state['startedAt'] = datetime.utcnow().isoformat() + 'Z'
-        _weekly_upload_state['finishedAt'] = None
-        _weekly_upload_state['totalCourses'] = 0
-        _weekly_upload_state['processedCourses'] = 0
-        _weekly_upload_state['currentCourse'] = ''
-        _weekly_upload_state['currentCode'] = ''
-        _weekly_upload_state['loopEvents'] = loop_events
-        _weekly_upload_state['loadHistory'] = load_history
-        _weekly_upload_state['parkrunName'] = parkrun_name
-        _weekly_upload_state['sqlPipelineOptions'] = dict(sql_pipeline_options)
-        _weekly_upload_state['previousSqlRun'] = matched_previous_sql_run
-        _weekly_upload_state['error'] = None
-        _weekly_upload_state['logs'] = deque(maxlen=WEEKLY_UPLOAD_LOG_LIMIT)
-        run_token = int(_weekly_upload_state['runToken'])
-
-    if run_mode == 'sqlPipeline':
-        queued_message = 'Weekly SQL pipeline queued.'
-    elif run_mode == 'curveReferencePublish':
-        queued_message = 'curve_time_ranks_reference rebuild and Postgres publish queued.'
-    else:
-        queued_message = 'Weekly upload queued.'
-
-    _weekly_upload_log(queued_message, level='info')
-    if run_mode == 'sqlPipeline' and matched_previous_sql_run and sql_pipeline_options.get('resumeCurveFromAllHistory') and not sql_pipeline_options.get('forceFreshStart'):
-        _weekly_upload_log(
-            'Auto-resume checkpoint found for this date. The run will resume from Rebuild All-History Time Reference unless you force a fresh start.',
-            level='info'
-        )
-    elif run_mode == 'sqlPipeline' and matched_previous_sql_run and sql_pipeline_options.get('resumeCurveFromStage2') and not sql_pipeline_options.get('forceFreshStart'):
-        _weekly_upload_log(
-            'Auto-resume checkpoint found for this date. The run will resume from Curve Stage 2 Current Snapshot unless you force a fresh start.',
-            level='info'
-        )
-
-    if run_mode == 'sqlPipeline':
-        worker = threading.Thread(
-            target=_run_weekly_sql_pipeline_worker,
-            args=(sql_pipeline_options, run_token),
-            daemon=True
-        )
-    elif run_mode == 'curveReferencePublish':
-        worker = threading.Thread(
-            target=_run_curve_reference_publish_worker,
-            args=(sql_pipeline_options.get('startDate'), run_token),
-            daemon=True
-        )
-    else:
-        worker = threading.Thread(
-            target=_run_weekly_upload_worker,
-            args=(loop_events, load_history, parkrun_name, run_token),
-            daemon=True
-        )
-    _register_admin_worker(run_mode, run_token, worker, label=sql_pipeline_options.get('startDate') if run_mode != 'standard' else parkrun_name)
-    worker.start()
-
-    return jsonify({'ok': True, 'state': _weekly_upload_snapshot()}), 202
-
-
-@app.route('/api/admin/curve-reference/publish', methods=['POST'])
-def admin_curve_reference_publish():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-
-    payload = request.get_json(silent=True) or {}
-    try:
-        sql_pipeline_options = _parse_weekly_sql_pipeline_options(payload.get('sqlPipelineOptions'))
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    background_jobs_error = _background_jobs_running_error()
-    if background_jobs_error is not None:
-        return jsonify(background_jobs_error), 409
-
-    current_state = None
-    with _curve_reference_state_lock:
-        if _curve_reference_state['running']:
-            current_state = {
-                'running': bool(_curve_reference_state['running']),
-                'status': str(_curve_reference_state['status'] or 'running')
-            }
-    if current_state is not None:
-        return jsonify({'error': 'Curve reference publish is already running.', 'state': current_state}), 409
-
-    with _curve_reference_state_lock:
-        _curve_reference_state['running'] = True
-        _curve_reference_state['status'] = 'running'
-        _curve_reference_state['runToken'] = int(_curve_reference_state.get('runToken') or 0) + 1
-        _curve_reference_state['startedAt'] = datetime.utcnow().isoformat() + 'Z'
-        _curve_reference_state['finishedAt'] = None
-        _curve_reference_state['referenceDate'] = str(sql_pipeline_options.get('startDate') or '')
-        _curve_reference_state['error'] = None
-        _curve_reference_state['logs'] = deque(maxlen=WEEKLY_UPLOAD_LOG_LIMIT)
-        run_token = int(_curve_reference_state['runToken'])
-
-    _curve_reference_log('curve_time_ranks_reference rebuild and Postgres publish queued.', level='info')
-
-    worker = threading.Thread(
-        target=_run_curve_reference_publish_task,
-        args=(sql_pipeline_options.get('startDate'), run_token),
-        daemon=True
-    )
-    _register_admin_worker('curveReferencePublish', run_token, worker, label=sql_pipeline_options.get('startDate'))
-    worker.start()
-
-    return jsonify({'ok': True, 'state': _curve_reference_snapshot()}), 202
-
-
-@app.route('/api/admin/curve-reference/status', methods=['GET'])
-def admin_curve_reference_status():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-    return jsonify(_curve_reference_snapshot()), 200
-
-
-@app.route('/api/admin/curve-reference/reset', methods=['POST'])
-def admin_curve_reference_reset():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-
-    with _curve_reference_state_lock:
-        has_state_to_clear = bool(_curve_reference_state['running']) \
-            or bool(_curve_reference_state.get('logs')) \
-            or str(_curve_reference_state.get('status') or '') not in ('', 'idle', 'reset') \
-            or bool(_curve_reference_state.get('error'))
-        if not has_state_to_clear:
-            return jsonify({'error': 'No curve reference task state is currently active.'}), 409
-
-        previous_reference_date = str(_curve_reference_state.get('referenceDate') or '')
-        _curve_reference_state['runToken'] = int(_curve_reference_state.get('runToken') or 0) + 1
-        _curve_reference_clear_view_state_locked()
-
-    _curve_reference_log(
-        f'Admin reset the curve reference task state{f" for {previous_reference_date}" if previous_reference_date else ""}. Any stale worker output will be ignored.',
-        level='warning'
-    )
-    return jsonify({'ok': True, 'state': _curve_reference_snapshot()}), 202
-
-
-@app.route('/api/admin/weekly-upload/stop', methods=['POST'])
-def admin_weekly_upload_stop():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-
-    already_requested = False
-    with _weekly_upload_state_lock:
-        if not _weekly_upload_state['running']:
-            return jsonify({'error': 'No weekly upload is currently running.'}), 409
-        if str(_weekly_upload_state.get('runMode') or 'standard') != 'standard':
-            return jsonify({'error': 'Stop is only supported for the standard weekly upload run.'}), 409
-        if _weekly_upload_state.get('stopRequested'):
-            already_requested = True
-        else:
-            _weekly_upload_state['stopRequested'] = True
-            _weekly_upload_state['status'] = 'stopping'
-
-    if already_requested:
-        return jsonify({'ok': True, 'state': _weekly_upload_snapshot()}), 202
-
-    _weekly_upload_log('Stop requested. The weekly upload will halt after the current course finishes.', level='warning')
-    return jsonify({'ok': True, 'state': _weekly_upload_snapshot()}), 202
-
-
-@app.route('/api/admin/weekly-upload/reset', methods=['POST'])
-def admin_weekly_upload_reset():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-
-    with _weekly_upload_state_lock:
-        current_run_mode = str(_weekly_upload_state.get('runMode') or 'standard')
-        if current_run_mode == 'standard':
-            return jsonify({'error': 'Reset is only supported for non-standard admin tasks.'}), 409
-        has_state_to_clear = bool(_weekly_upload_state['running']) \
-            or bool(_weekly_upload_state.get('logs')) \
-            or str(_weekly_upload_state.get('status') or '') not in ('', 'idle', 'reset') \
-            or bool(_weekly_upload_state.get('error'))
-        if not has_state_to_clear:
-            return jsonify({'error': 'No non-standard admin task state is currently active.'}), 409
-
-        previous_course = str(_weekly_upload_state.get('currentCourse') or '')
-        _weekly_upload_state['runToken'] = int(_weekly_upload_state.get('runToken') or 0) + 1
-        _weekly_upload_clear_view_state_locked()
-
-    _weekly_upload_log(
-        f'Admin reset the {current_run_mode} task state{f" while {previous_course} was active" if previous_course else ""}. Any stale worker output will be ignored.',
-        level='warning'
-    )
-    return jsonify({'ok': True, 'state': _weekly_upload_snapshot()}), 202
-
-
-@app.route('/api/admin/weekly-upload/delete-event', methods=['POST'])
-def admin_weekly_upload_delete_event():
-    auth_error = _authorize_weekly_upload_request()
-    if auth_error is not None:
-        return auth_error
-
-    payload = request.get_json(silent=True) or {}
-    try:
-        event_code = int(str(payload.get('eventCode') or '').strip())
-    except Exception:
-        return jsonify({'error': 'eventCode must be a whole number.'}), 400
-
-    event_name = str(payload.get('eventName') or '').strip()
-    start_date = str(payload.get('startDate') or '').strip()
-
-    if not start_date:
-        return jsonify({'error': 'startDate is required.'}), 400
-
-    with _weekly_upload_state_lock:
-        if _weekly_upload_state['running']:
-            return jsonify({'error': 'Cannot delete an event while a weekly task is running.'}), 409
-
-    try:
-        deleted = _delete_uploaded_event_scope(event_code, start_date)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    except Exception as exc:
-        return jsonify({'error': f'Failed to delete uploaded event: {exc}'}), 500
-
-    _weekly_upload_log(
-        f"Deleted uploaded event data for {event_name or 'selected course'} on {start_date}",
-        level='warning',
-        event_code=event_code,
-        event_name=event_name
-    )
-    _weekly_upload_log(
-        'Delete summary: '
-        f"sqlite eventpositions={deleted['sqlite']['eventpositions']}, sqlite parkrun_events={deleted['sqlite']['parkrunEvents']}, "
-        f"postgres eventpositions={deleted['postgres']['eventpositions']}, postgres parkrun_events={deleted['postgres']['parkrunEvents']}",
-        level='warning',
-        event_code=event_code,
-        event_name=event_name
-    )
-
-    return jsonify({'ok': True, 'deleted': deleted, 'state': _weekly_upload_snapshot()}), 200
-
-
-def _supports_explicit_admin_flag():
-    return hasattr(AuthUser, 'is_admin')
-
-
-def _count_admins_and_bootstrap_state():
-    if _supports_explicit_admin_flag():
-        admin_count = int(AuthUser.query.filter_by(is_admin=True).count())
-        return admin_count, admin_count == 0
-
-    # Legacy schema fallback: no explicit admin column exists locally.
-    total_users = int(AuthUser.query.count())
-    return total_users, total_users == 0
-
-
-@app.route('/api/admin/status', methods=['GET'])
-def admin_status():
-    _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    admin_count, bootstrap_open = _count_admins_and_bootstrap_state()
-    can_access = _is_admin_user(user) or bootstrap_open
-
-    return jsonify({
-        'canAccessAdmin': bool(can_access),
-        'adminCount': int(admin_count),
-        'bootstrapOpen': bool(bootstrap_open),
-        'user': _user_payload(user)
-    }), 200
-
-
-@app.route('/api/admin/users', methods=['GET'])
-def admin_users():
-    _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    admin_count, bootstrap_open = _count_admins_and_bootstrap_state()
-    if not (_is_admin_user(user) or bootstrap_open):
-        return jsonify({'error': 'Forbidden'}), 403
-
-    rows = AuthUser.query.order_by(AuthUser.created_at.desc()).all()
-    users_payload = []
-    for row in rows:
-        explicit_admin_value = getattr(row, 'is_admin', None)
-        users_payload.append({
-            'id': row.id,
-            'email': row.email,
-            'displayName': row.display_name,
-            'athleteCode': row.athlete_code,
-            'defaultCourseCode': row.default_course_code,
-            'defaultCourseName': row.default_course_name,
-            'isAdmin': bool(explicit_admin_value) if explicit_admin_value is not None else True,
-            'createdAt': row.created_at.isoformat() if row.created_at else None,
-            'lastLoginAt': row.last_login_at.isoformat() if row.last_login_at else None,
-        })
-
-    return jsonify({
-        'users': users_payload,
-        'adminCount': int(admin_count),
-        'bootstrapOpen': bool(bootstrap_open)
-    }), 200
-
-
-@app.route('/api/admin/activity', methods=['GET'])
-def admin_activity():
-    _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    admin_count, bootstrap_open = _count_admins_and_bootstrap_state()
-    if not (_is_admin_user(user) or bootstrap_open):
-        return jsonify({'error': 'Forbidden'}), 403
-
-    try:
-        limit = int(request.args.get('limit', 300))
-    except Exception:
-        limit = 300
-    limit = max(1, min(limit, 5000))
-
-    since = _parse_dt(request.args.get('since'))
-    activity = _build_admin_activity_feed(limit, since)
-    return jsonify({'activity': activity, 'limit': limit}), 200
-
-
-@app.route('/api/admin/users/<int:user_id>/admin', methods=['POST'])
-def admin_set_user_admin(user_id):
-    _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    admin_count, bootstrap_open = _count_admins_and_bootstrap_state()
-    if not (_is_admin_user(user) or bootstrap_open):
-        return jsonify({'error': 'Forbidden'}), 403
-
-    if not _supports_explicit_admin_flag():
-        return jsonify({'error': 'Admin role editing is not available in this local schema.'}), 400
-
-    payload = request.get_json(silent=True) or {}
-    desired_flag = bool(payload.get('isAdmin'))
-
-    target = AuthUser.query.filter_by(id=user_id).first()
-    if not target:
-        return jsonify({'error': 'User not found'}), 404
-
-    target.is_admin = desired_flag
-    db.session.commit()
-
-    updated_admin_count, updated_bootstrap_open = _count_admins_and_bootstrap_state()
-
-    return jsonify({
-        'ok': True,
-        'user': {
-            'id': target.id,
-            'email': target.email,
-            'displayName': target.display_name,
-            'athleteCode': target.athlete_code,
-            'defaultCourseCode': target.default_course_code,
-            'defaultCourseName': target.default_course_name,
-            'isAdmin': bool(getattr(target, 'is_admin', False)),
-            'createdAt': target.created_at.isoformat() if target.created_at else None,
-            'lastLoginAt': target.last_login_at.isoformat() if target.last_login_at else None,
-        },
-        'adminCount': int(updated_admin_count),
-        'bootstrapOpen': bool(updated_bootstrap_open)
-    }), 200
 
 
 @app.route('/api/feedback-requests', methods=['GET'])
@@ -2226,7 +491,6 @@ def create_feedback_request():
     request_type_raw = str(payload.get('type') or '').strip().lower()
     title = str(payload.get('title') or '').strip()
     details = str(payload.get('details') or '').strip()
-    status_raw = str(payload.get('status') or '').strip().lower() if 'status' in payload else None
 
     if request_type_raw not in ('error', 'suggestion'):
         return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
@@ -2243,7 +507,8 @@ def create_feedback_request():
         created_by_user_id=user.id,
         created_by_display_name=(user.display_name or '').strip() or None,
         created_by_email=user.email,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
     )
     db.session.add(row)
     db.session.commit()
@@ -2263,7 +528,8 @@ def update_feedback_request(request_id):
     request_type_raw = str(payload.get('type') or '').strip().lower()
     title = str(payload.get('title') or '').strip()
     details = str(payload.get('details') or '').strip()
-    status_raw = str(payload.get('status') or '').strip().lower() if 'status' in payload else None
+    status_raw = str(payload.get('status') or 'updated').strip().lower()
+    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed', 'deleted'}
 
     if request_type_raw not in ('error', 'suggestion'):
         return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
@@ -2271,16 +537,23 @@ def update_feedback_request(request_id):
         return jsonify({'error': 'title is required'}), 400
     if not details:
         return jsonify({'error': 'details are required'}), 400
+    if status_raw not in allowed_statuses:
+        return jsonify({'error': 'status is invalid'}), 400
 
     row = FeedbackRequest.query.filter_by(id=request_id).first()
     if not row:
         return jsonify({'error': 'feedback request not found'}), 404
 
+    if status_raw == 'deleted':
+        db.session.delete(row)
+        db.session.commit()
+        return jsonify({'id': request_id, 'deleted': True}), 200
+
     row.request_type = request_type_raw
     row.title = title
     row.details = details
-    if status_raw:
-        row.status = status_raw
+    row.status = status_raw
+    row.updated_at = datetime.utcnow()
     db.session.commit()
 
     return jsonify(_feedback_payload(row)), 200
@@ -2328,6 +601,43 @@ def create_chat_message():
     db.session.commit()
 
     return jsonify(_chat_message_payload(row)), 201
+
+
+def _format_db_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+#@app.route('/get_parkrun_data', methods=['GET']) 
+#def get_parkrun_data_route(): 
+#    return get_parkrun_data()
+
+@app.route('/api/auth/config', methods=['GET'])
+def auth_config():
+    return jsonify({
+        'googleClientId': os.getenv('GOOGLE_CLIENT_ID') or ''
+    }), 200
+
+
+@app.route('/api/events/options', methods=['GET'])
+def get_event_options():
+    rows = db.session.execute(text("""
+        SELECT CAST(event_code AS TEXT) AS event_code,
+               COALESCE(NULLIF(display_name, ''), event_name) AS event_name
+        FROM events
+        ORDER BY COALESCE(NULLIF(display_name, ''), event_name)
+    """)).mappings().all()
+    payload = [
+        {
+            'eventCode': str(row.get('event_code') or ''),
+            'eventName': str(row.get('event_name') or '')
+        }
+        for row in rows
+        if row.get('event_code') is not None and row.get('event_name') is not None
+    ]
+    return jsonify(payload), 200
 
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -2394,6 +704,7 @@ def auth_login():
     db.session.add(AuthSession(token=token, user_id=user.id, provider='email'))
     db.session.commit()
     _record_login_event(user.id, 'email', True)
+
     payload_user = _user_payload(user)
     payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
     return jsonify({'token': token, 'user': payload_user}), 200
@@ -2401,9 +712,6 @@ def auth_login():
 
 @app.route('/api/auth/google', methods=['POST'])
 def auth_google():
-    if id_token is None or google_requests is None:
-        return jsonify({'error': 'Google auth dependencies are not installed on backend.'}), 501
-
     payload = request.get_json(silent=True) or {}
     credential = payload.get('credential') or payload.get('idToken')
     athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
@@ -2412,22 +720,19 @@ def auth_google():
         payload.get('defaultCourseName')
     )
     if not credential:
-        return jsonify({'error': 'Google credential is required.'}), 400
+        return jsonify({'error': 'Google credential is required'}), 400
 
     client_id = os.getenv('GOOGLE_CLIENT_ID')
     if not client_id:
-        return jsonify({'error': 'GOOGLE_CLIENT_ID is not configured on backend.'}), 500
+        return jsonify({'error': 'GOOGLE_CLIENT_ID is not configured on backend'}), 500
 
     try:
-        # Allow small local clock drift to avoid intermittent "Token used too early" failures.
         claims = id_token.verify_oauth2_token(
             credential,
             google_requests.Request(),
-            client_id,
-            clock_skew_in_seconds=10
+            client_id
         )
     except Exception as exc:
-        _record_login_event(None, 'google', False)
         return jsonify({'error': f'Invalid Google token: {exc}'}), 401
 
     google_sub = claims.get('sub')
@@ -2466,13 +771,17 @@ def auth_google():
     user.last_login_at = datetime.utcnow()
     db.session.commit()
 
-    token = _session_token()
-    db.session.add(AuthSession(token=token, user_id=user.id, provider='google'))
+    session_token = _session_token()
+    db.session.add(AuthSession(token=session_token, user_id=user.id, provider='google'))
     db.session.commit()
     _record_login_event(user.id, 'google', True)
+
     payload_user = _user_payload(user)
     payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
-    return jsonify({'token': token, 'user': payload_user}), 200
+    return jsonify({
+        'token': session_token,
+        'user': payload_user
+    }), 200
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -2488,25 +797,6 @@ def auth_logout():
     return jsonify({'ok': True}), 200
 
 
-@app.route('/api/events/options', methods=['GET'])
-def get_event_options():
-    rows = db.session.execute(text("""
-        SELECT CAST(event_code AS TEXT) AS event_code,
-               COALESCE(NULLIF(display_name, ''), event_name) AS event_name
-        FROM events
-        ORDER BY COALESCE(NULLIF(display_name, ''), event_name)
-    """)).mappings().all()
-    payload = [
-        {
-            'eventCode': str(row.get('event_code') or ''),
-            'eventName': str(row.get('event_name') or '')
-        }
-        for row in rows
-        if row.get('event_code') is not None and row.get('event_name') is not None
-    ]
-    return jsonify(payload), 200
-
-
 @app.route('/api/auth/me', methods=['GET'])
 def auth_me():
     session_token = _extract_bearer_token()
@@ -2514,6 +804,225 @@ def auth_me():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify({'user': _user_payload(user)}), 200
+
+
+@app.route('/api/admin/status', methods=['GET'])
+def admin_status():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    admin_count = _admin_count()
+    bootstrap_open = admin_count == 0
+    can_access_admin = bool(user.is_admin) or bootstrap_open
+
+    return jsonify({
+        'adminCount': admin_count,
+        'bootstrapOpen': bootstrap_open,
+        'canAccessAdmin': can_access_admin,
+        'user': _user_payload(user)
+    }), 200
+
+
+@app.route('/api/admin/users', methods=['GET'])
+def admin_users_list():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    rows = AuthUser.query.order_by(AuthUser.created_at.desc()).all()
+    payload = []
+    for row in rows:
+        payload.append({
+            'id': row.id,
+            'email': row.email,
+            'displayName': row.display_name,
+            'athleteCode': row.athlete_code,
+            'defaultCourseCode': row.default_course_code,
+            'defaultCourseName': row.default_course_name,
+            'isAdmin': bool(row.is_admin),
+            'createdAt': _format_db_datetime(row.created_at),
+            'lastLoginAt': _format_db_datetime(row.last_login_at)
+        })
+
+    return jsonify({
+        'users': payload,
+        'adminCount': _admin_count(),
+        'bootstrapOpen': _is_admin_bootstrap_open()
+    }), 200
+
+
+@app.route('/api/admin/users/<int:user_id>/admin', methods=['POST'])
+def admin_user_set_admin(user_id):
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    is_admin = bool(payload.get('isAdmin', False))
+
+    target = AuthUser.query.filter_by(id=user_id).first()
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    if not is_admin and bool(target.is_admin):
+        admin_count_before = _admin_count()
+        if admin_count_before <= 1:
+            return jsonify({'error': 'At least one admin is required.'}), 400
+
+    target.is_admin = is_admin
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'user': {
+            'id': target.id,
+            'email': target.email,
+            'displayName': target.display_name,
+            'athleteCode': target.athlete_code,
+            'defaultCourseCode': target.default_course_code,
+            'defaultCourseName': target.default_course_name,
+            'isAdmin': bool(target.is_admin),
+            'createdAt': _format_db_datetime(target.created_at),
+            'lastLoginAt': _format_db_datetime(target.last_login_at)
+        },
+        'adminCount': _admin_count(),
+        'bootstrapOpen': _is_admin_bootstrap_open()
+    }), 200
+
+
+@app.route('/api/admin/users/<int:user_id>/default-course', methods=['POST'])
+def admin_user_set_default_course(user_id):
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    target = AuthUser.query.filter_by(id=user_id).first()
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    dc_code, dc_name = _resolve_default_course(payload.get('defaultCourseCode'), payload.get('defaultCourseName'))
+    if not dc_code and not dc_name:
+        return jsonify({'error': 'Course not found. Please check the course code or name.'}), 400
+    target.default_course_code = dc_code
+    target.default_course_name = dc_name
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'user': {
+            'id': target.id,
+            'email': target.email,
+            'displayName': target.display_name,
+            'athleteCode': target.athlete_code,
+            'defaultCourseCode': target.default_course_code,
+            'defaultCourseName': target.default_course_name,
+            'isAdmin': bool(target.is_admin),
+            'createdAt': _format_db_datetime(target.created_at),
+            'lastLoginAt': _format_db_datetime(target.last_login_at)
+        }
+    }), 200
+
+
+@app.route('/api/admin/activity', methods=['GET'])
+def admin_activity_list():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    limit = request.args.get('limit', default=300, type=int)
+    limit = max(20, min(limit, 5000))
+    since_raw = request.args.get('since', default='', type=str)
+    since_dt = _parse_dt(since_raw)
+
+    sql = text("""
+        WITH page_events AS (
+            SELECT
+                'page_visit'::text AS activity_type,
+                p.created_at AS activity_at,
+                au.id AS user_id,
+                au.email AS email,
+                au.display_name AS display_name,
+                NULL::text AS provider,
+                NULL::boolean AS success,
+                p.page_path AS page_path,
+                p.duration_ms AS duration_ms,
+                p.referrer_path AS referrer_path,
+                p.user_agent AS user_agent,
+                NULL::text AS ip_address
+            FROM page_usage_events p
+            LEFT JOIN auth_sessions s ON s.token = p.session_token
+            LEFT JOIN auth_users au ON au.id = s.user_id
+        ),
+        login_events AS (
+            SELECT
+                'login'::text AS activity_type,
+                l.created_at AS activity_at,
+                au.id AS user_id,
+                au.email AS email,
+                au.display_name AS display_name,
+                l.provider AS provider,
+                l.success AS success,
+                NULL::text AS page_path,
+                NULL::integer AS duration_ms,
+                NULL::text AS referrer_path,
+                l.user_agent AS user_agent,
+                l.ip_address AS ip_address
+            FROM auth_login_events l
+            LEFT JOIN auth_users au ON au.id = l.user_id
+        ),
+        combined AS (
+            SELECT * FROM page_events
+            UNION ALL
+            SELECT * FROM login_events
+        )
+        SELECT
+            activity_type,
+            activity_at,
+            user_id,
+            email,
+            display_name,
+            provider,
+            success,
+            page_path,
+            duration_ms,
+            referrer_path,
+            user_agent,
+            ip_address
+        FROM combined
+        WHERE (:since_dt IS NULL OR activity_at >= :since_dt)
+        ORDER BY activity_at DESC NULLS LAST
+        LIMIT :limit
+    """)
+
+    rows = db.session.execute(sql, {'limit': limit, 'since_dt': since_dt}).mappings().all()
+    payload = []
+    for row in rows:
+        payload.append({
+            'activityType': row.get('activity_type'),
+            'activityAt': _format_db_datetime(row.get('activity_at')),
+            'userId': row.get('user_id'),
+            'email': row.get('email'),
+            'displayName': row.get('display_name'),
+            'provider': row.get('provider'),
+            'success': row.get('success'),
+            'pagePath': row.get('page_path'),
+            'durationMs': row.get('duration_ms'),
+            'referrerPath': row.get('referrer_path'),
+            'userAgent': row.get('user_agent'),
+            'ipAddress': row.get('ip_address')
+        })
+
+    return jsonify({'activity': payload, 'limit': limit}), 200
 
 
 @app.route('/api/auth/link-athlete', methods=['POST'])
@@ -2550,21 +1059,15 @@ def auth_link_athlete():
     return jsonify({'ok': True, 'user': _user_payload(user)}), 200
 
 
-@app.route('/api/auth/config', methods=['GET'])
-def auth_config():
-    return jsonify({
-        'googleClientId': os.getenv('GOOGLE_CLIENT_ID') or ''
-    }), 200
-
-
-@app.route('/api/analytics/page-visit', methods=['POST'])
+@app.route('/api/analytics/page-visit', methods=['POST', 'OPTIONS'])
 def track_page_visit():
-    payload = request.get_json(silent=True) or {}
-    session_token = payload.get('token') or _extract_bearer_token()
-    _sess, user = _resolve_session(session_token)
+    if request.method == 'OPTIONS':
+        return ('', 204)
 
-    page_path = (payload.get('path') or '').strip()
-    if not page_path:
+    payload = request.get_json(silent=True) or {}
+    token = payload.get('token')
+    path = (payload.get('path') or '').strip()
+    if not path:
         return jsonify({'error': 'path is required'}), 400
 
     duration_ms = payload.get('durationMs')
@@ -2573,594 +1076,23 @@ def track_page_visit():
     except Exception:
         duration_ms = None
 
-    if duration_ms is not None:
-        duration_ms = max(0, min(duration_ms, 7 * 24 * 60 * 60 * 1000))
-
-    event = PageUsageEvent(
-        user_id=user.id if user else None,
-        session_token=session_token,
-        page_path=page_path[:512],
-        entered_at=_parse_dt(payload.get('enteredAt')),
-        left_at=_parse_dt(payload.get('leftAt')),
-        duration_ms=duration_ms,
-        referrer_path=(payload.get('referrer') or payload.get('referrerPath') or '')[:512] or None,
-        user_agent=request.headers.get('User-Agent')
-    )
-    db.session.add(event)
+    db.session.execute(text("""
+        INSERT INTO page_usage_events
+            (session_token, page_path, entered_at, left_at, duration_ms, referrer_path, user_agent, created_at)
+        VALUES
+            (:session_token, :page_path, :entered_at, :left_at, :duration_ms, :referrer_path, :user_agent, NOW())
+    """), {
+        'session_token': token,
+        'page_path': path[:512],
+        'entered_at': payload.get('enteredAt'),
+        'left_at': payload.get('leftAt'),
+        'duration_ms': duration_ms,
+        'referrer_path': (payload.get('referrer') or '')[:512] or None,
+        'user_agent': request.headers.get('User-Agent'),
+    })
     db.session.commit()
     return jsonify({'ok': True}), 200
 
-@app.route('/', methods=['GET', 'POST'])
-def home():
-    if request.method == 'POST':
-        # handle POST logic here
-        return jsonify(message="Received a POST request"), 200
-    return jsonify(message="Welcome to the API!"), 200
-@app.route('/zz', methods=['GET', 'POST'])
-def zz():
-    if request.method == 'POST':
-        # handle POST logic here
-        print("In ZZ!!")
-        return jsonify(message="Received a POST request"), 200
-        
-    return jsonify(message="Welcome to the API!"), 200
-# Set up logging 
-logging.basicConfig(level=logging.INFO)
-@app.route('/get_parkrun_data', methods=['POST'])
-def get_parkrun_data_route():
-    try:
-        print("GPDR")
-        event_codes = request.json.get('eventCodes')
-        print("GPDR",event_codes)
-        logging.info(f"Received eventCodes: {event_codes}")
-        result = get_parkrun_data(event_codes)
-        #logging.info(f"Returning result: {result}")
-        return jsonify(result) # Ensure the response is JSON
-    except Exception as e:
-        logging.error(f"Error fetching parkrun data: {e}")
-        return jsonify({"error": "An error occurred while fetching the data."}), 500
-
-
-@app.route('/api/eventinfo', methods=['GET'])
-def get_event_info():
-    """Return event_name and event_number for a supplied event_number/event_code/event_name and event_date.
-       Accepts query params: event_number (int) OR event_code (int) OR event_name (str), plus event_date (str: DD/MM/YYYY or YYYY-MM-DD).
-    """
-    event_number = request.args.get('event_number', default=None, type=int)
-    event_code = request.args.get('event_code', default=None, type=int)
-    event_name = request.args.get('display_name', default=None, type=str)
-    event_date = request.args.get('event_date', default=None, type=str)
-
-    # Validate minimal inputs
-    if event_date is None or (event_number is None and event_code is None and event_name is None):
-        return jsonify({"error": "Provide event_date and one of event_number, event_code or event_name"}), 400
-
-    try:
-        conn, cursor, render_db_conn, render_cursor = connections()
-        record = None
-        # Prepare event_date variants to match DB formats (DD/MM/YYYY or YYYY-MM-DD)
-        dates_to_try = [event_date]
-        try:
-            # If input is YYYY-MM-DD convert to DD/MM/YYYY
-            import re
-            if re.match(r'^\d{4}-\d{2}-\d{2}$', event_date or ''):
-                parts = event_date.split('-')
-                alt = f"{parts[2]}/{parts[1]}/{parts[0]}"
-                if alt not in dates_to_try:
-                    dates_to_try.append(alt)
-            # If input is DD/MM/YYYY convert to YYYY-MM-DD
-            if re.match(r'^\d{2}/\d{2}/\d{4}$', event_date or ''):
-                p = event_date.split('/')
-                alt2 = f"{p[2]}-{p[1]}-{p[0]}"
-                if alt2 not in dates_to_try:
-                    dates_to_try.append(alt2)
-        except Exception:
-            pass
-
-        # Helper to execute a query with date variants
-        def try_query(sql, params_base):
-            for d in dates_to_try:
-                params = list(params_base) + [d]
-                cursor.execute(sql, tuple(params))
-                r = cursor.fetchone()
-                if r:
-                    return r
-            return None
-
-        # Prefer event_number lookup when provided
-        if event_number is not None:
-            sql = '''
-                SELECT pe.event_number, e.display_name, pe.event_code
-                FROM parkrun_events pe
-                LEFT JOIN events e ON pe.event_code = e.event_code
-                WHERE pe.event_number = ? AND pe.event_date = ?
-                LIMIT 1
-            '''
-            record = try_query(sql, [event_number])
-
-        # Fallback to event_code + event_date
-        if record is None and event_code is not None:
-            sql = '''
-                SELECT pe.event_number, e.display_name, pe.event_code
-                FROM parkrun_events pe
-                LEFT JOIN events e ON pe.event_code = e.event_code
-                WHERE pe.event_code = ? AND pe.event_date = ?
-                LIMIT 1
-            '''
-            record = try_query(sql, [event_code])
-
-        # Fallback to event_name + event_date (case-insensitive exact match)
-        if record is None and event_name is not None:
-            sql = '''
-                SELECT pe.event_number, e.display_name, pe.event_code
-                FROM parkrun_events pe
-                LEFT JOIN events e ON pe.event_code = e.event_code
-                WHERE LOWER(e.event_name) = LOWER(?) AND pe.event_date = ?
-                LIMIT 1
-            '''
-            record = try_query(sql, [event_name])
-
-        if record:
-            ev_number, ev_name, ev_code = record
-            return jsonify({
-                'event_number': ev_number,
-                'event_name': ev_name,
-                'event_code': ev_code
-            }), 200
-        return jsonify({"error": "Event not found"}), 404
-    except Exception as e:
-        logging.error(f"Error in get_event_info: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-@app.route('/api/eventby_number', methods=['GET'])
-def get_event_by_number():
-    """Return event_date and optional event_name for a supplied event_code + event_number.
-       Query params: event_code (int), event_number (int)
-    """
-    event_code = request.args.get('event_code', default=None, type=int)
-    event_number = request.args.get('event_number', default=None, type=int)
-
-    if event_code is None or event_number is None:
-        return jsonify({"error": "Provide event_code and event_number"}), 400
-
-    try:
-        conn, cursor, render_db_conn, render_cursor = connections()
-        cursor.execute('SELECT event_date FROM parkrun_events WHERE event_code = ? AND event_number = ? LIMIT 1', (event_code, event_number))
-        row = cursor.fetchone()
-        if not row:
-            return jsonify({"error": "Event not found"}), 404
-        event_date = row[0]
-        # Try to fetch a friendly display name if available
-        cursor.execute('SELECT display_name FROM events WHERE event_code = ? LIMIT 1', (event_code,))
-        r2 = cursor.fetchone()
-        display_name = r2[0] if r2 else None
-        return jsonify({
-            'event_code': event_code,
-            'event_number': event_number,
-            'event_date': event_date,
-            'event_name': display_name
-        }), 200
-    except Exception as e:
-        logging.error(f"Error in get_event_by_number: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-@app.route('/reconnect', methods=['GET']) 
-def reconnectDB(): 
-    try: 
-        conn, cursor, render_db_conn, render_cursor = connections() 
-        return jsonify({"message": "Database reconnected successfully."}), 200
-    except Exception as e: 
-        logging.error(f"Database reconnecting error: {e}") 
-        return jsonify({"error": "An error occurred while reconnecting to the database."}), 500
-@app.route('/api/delete_eventpositions', methods=['DELETE'])
-def delete_event_positions_local():
-    data = request.get_json()  # Get the JSON payload
-    event_code = data.get('event_code')
-    event_date = data.get('event_date')
-
-    # Validate input
-    if not event_code or not event_date:
-        return jsonify({"error": "event_code and event_date are required"}), 400
-
-    try:
-        conn,cursor,render_db_conn,render_cursor=connections()
-        # Delete from the eventpositions table in SQLite
- 
-        cursor.execute('DELETE FROM eventpositions WHERE event_code = ? AND event_date = ?', (event_code, event_date))
-        conn.commit()  # Commit changes to the SQLite database    
-        return jsonify({"message": f"Record deleted from eventpositions."}), 200
-
-
-    except Exception as e:
-        conn.rollback()  # Rollback in case of error
-        return jsonify({"error": str(e)}), 500   
-@app.route('/api/parkrun_events', methods=['DELETE'])
-def delete_parkrun_events():
-    data = request.get_json()  # Get the JSON payload
-    event_code = data.get('event_code')
-    event_date = data.get('event_date')
-
-
-    # Validate input
-    if not event_code or not event_date:
-        return jsonify({"error": "event_code and event_date are required"}), 400
-
-    try:
-        conn,cursor,render_db_conn,render_cursor=connections()
-        # Delete from parkrun_events table
-
-        cursor.execute('SELECT * FROM parkrun_events  WHERE event_code = ? AND event_date = ?', (event_code, event_date))
-        record = cursor.fetchone()
-        print("before",record);
-
-        cursor.execute('DELETE FROM parkrun_events WHERE event_code = ? AND event_date = ?', (event_code, event_date))
-        conn.commit()  # Commit changes to the SQLite database
-    
-        cursor.execute('SELECT * FROM parkrun_events  WHERE event_code = ? AND event_date = ?', (event_code, event_date))
-        record = cursor.fetchone()
-        print("after",record);
-
-    
-        return jsonify({"message": f"Record deleted from parkrun_events."}), 200
-
-    except Exception as e:
-        conn.rollback()  # Rollback in case of error
-        return jsonify({"error": str(e)}), 500  
-@app.route('/api/parkrun_event', methods=['GET'])
-def get_parkrun_event():
-    event_code = request.args.get('event_code', default=None, type=int)  # Get event_code from request URL
-    event_date = request.args.get('event_date', default=None, type=str)  # Get event_date from request URL
-
-    # Validate input
-    if not event_code or not event_date:
-        return jsonify({"error": "event_code and event_date are required"}), 400
-    try:
-        conn, cursor, render_db_conn, render_cursor = connections()
-        # Fetch the event based on event_code and event_date
-        cursor.execute('''
-            SELECT event_number, last_position, volunteers 
-            FROM parkrun_events 
-            WHERE event_code = ? AND event_date = ?
-        ''', (event_code, event_date))
-
-        record = cursor.fetchone()
-
-        if record:
-            event_number, last_position, volunteers = record  # Unpack the record
-            return jsonify({
-                "event_code": event_code,
-                "event_date": event_date,
-                "event_number": event_number,
-                "last_position": last_position,
-                "volunteers": volunteers
-            }), 200  # Return the fetched record as JSON
-        else:
-            return jsonify({"error": "Event not found"}), 404
-
-    except Exception as e:
-        print(f"Error occurred: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()  # Close the database connection
-@app.route('/add-empty-event', methods=['POST'])
-def add_empty_event():
-    data = request.json
-    print("Received data:", data)  # Debug statement
-    event_code = data['event_code']
-    event_date = data['event_date']
-    last_position = data['last_position']
-    event_number = data['event_number']
-    volunteers = data['volunteers']
-    parkrunName = data['parkrunName']
-
-    conn, cursor, render_db_conn, render_cursor = connections()
-
-    try:
-        # Call the existing update_parkrun_events function with the parameters
-        update_parkrun_events(cursor, render_cursor, event_code, event_date, last_position, event_number, volunteers, parkrunName)
-        return jsonify({"message": "Empty event record added successfully!"}), 200
-    except Exception as e:
-        print(f"Error adding empty event record: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()    
-@app.route('/process-event/<int:event_number>', methods=['POST'])
-def process_event(event_number):
-    print("enter process_event",event_number)
-    conn = None
-    driver = None
-    try:
-        # Connect to the database
-        conn, cursor, render_db_conn, render_cursor = connections()
-        driver = create_webdriver()
-
-        # Get incoming JSON data
-        data = request.get_json()
-        print('data:', data)
-        provided_event_name = data.get('event_name') if data else None
-        provided_event_code = data.get('event_code') if data else None
-
-        # Initialize variables for event_code and event_name
-        event_code = provided_event_code
-        event_name = provided_event_name  # Use provided event_name if available
-
-        # If we have an event_code but not an event_name, look up the name from events table
-        if event_code and not event_name:
-            cursor.execute('SELECT event_name FROM events WHERE event_code = ? LIMIT 1', (event_code,))
-            row = cursor.fetchone()
-            if row:
-                event_name = row[0]
-
-        # If we still don't have an event_name, fall back to finding by event_number (legacy behavior)
-        if not event_name:
-            cursor.execute('''
-                SELECT pe.event_code, e.event_name
-                FROM parkrun_events pe
-                LEFT JOIN events e ON pe.event_code = e.event_code
-                WHERE pe.event_number = ?
-                LIMIT 1
-            ''', (event_number,))
-            event_record = cursor.fetchone()
-
-            if event_record:
-                event_code = event_record[0]
-                event_name = event_record[1]
-            else:
-                return jsonify({"error": "Event not found"}), 404  # Early return if event is not in the database
-
-        # Construct the URL for the event
-        url = f'https://www.parkrun.org.uk/{event_name.lower()}/results/{event_number}/'
-        print('In here: process_event')
-
-        # Call your function to process the event
-        process_event_url(driver, cursor, render_cursor, url, event_number, event_name, conn, render_db_conn)
-        return jsonify(message=f"Processed event number {event_number} successfully!"), 200
-
-    except Exception as e:
-        print(f"Error occurred while processing event {event_number}: {e}")
-        return jsonify({"error": str(e)}), 500
-
-    finally:
-        if conn:
-            conn.close()
-        if driver:
-            driver.quit()
-@app.route('/process-event-date', methods=['POST'])
-def process_event_date():
-    print("enter PED")
-    data = request.json
-    print("enter PED1",data)
-    event_code = data['event_code']
-    event_date = data.get('event_date', None)
-    EvNumber = data.get('EvNumber', None)  # Get EvNumber from the request (optional)
-
-    event_name=""
-    print("PED",event_code,event_date,EvNumber)
-    # Ensure event_date is not None and well formatted
-    if not event_date and not EvNumber:
-        return jsonify({"error": "Event date is required."}), 400
-
-    # Attempt to parse the date; handle possible value errors
-    try:
-        if event_date:
-            # Replace Z with UTC offset to correctly parse
-            parsed_event_date = datetime.fromisoformat(event_date.replace("Z", "+00:00"))  # Handles the Z as UTC
-            formatted_event_date = parsed_event_date.strftime('%d/%m/%Y')  # Reformat to DD/MM/YYYY
-            print('Processing code1=', event_code, 'date=', formatted_event_date)
-    except ValueError as e:
-        return jsonify({"error": "Invalid date format."}), 400  # Return error for bad date formats
-
-    # Connect to the database
-    conn, cursor, render_db_conn, render_cursor = connections()
-    driver = create_webdriver()
-
-    try:
-        #print('Processing code=', event_code, 'date=', formatted_event_date)
-        
-       # Build initial event number based on EvNumber being provided
-        if EvNumber is not None:
-            event_number = EvNumber
-            print('Using provided event number:', event_number)
-
-            query = f'SELECT * FROM events WHERE event_code = {event_code};' # Use %s for PostgreSQL, ? for SQLite 
-            cursor.execute(query)    
-            eventN = cursor.fetchall()  # Fetch all records from events table
-            event_name = eventN[0][1]
-        else:
-            print("PED- before")
-            cursor.execute('''
-                SELECT pe.event_number, e.event_name 
-                FROM parkrun_events pe
-                LEFT JOIN events e ON pe.event_code = e.event_code
-                WHERE pe.event_code = ? AND pe.event_date = ?
-                    AND pe.event_number < 10000
-            ''', (event_code, formatted_event_date))
-            event_number=None
-            record = cursor.fetchone()
-            print("PED- after",record)
-            if not record:
-                #print("PED- before2")
-                result = get_event_number(event_code, event_date)
-                print("PED- after2",result)
-                if result is None or len(result) != 2:
-                    return jsonify({"error": "Failed to retrieve event number and name."}), 500
-                event_number, event_name = result                
-                print("check event",event_number," ",event_name)
-            if record or event_number>0:
-                if event_number==None:
-                    event_number = record[0]
-                    event_name = record[1]
-        print('Post-Processing code=', event_code, 'date=', event_date, 'name=', event_name,'number=', event_number)
-        numeric_event_number = int(event_number)
-        if numeric_event_number<10000:
-            # Construct the URL for the specific event
-            url = f'https://www.parkrun.org.uk/{event_name.lower()}/results/{event_number}/'
-            print('In here: process_event_date')
-            process_event_url(driver, cursor, render_cursor, url, event_number, event_name, conn, render_db_conn)
-            return jsonify(message=f"Processed event date {event_date} for event code {event_code} successfully!"), 200
-        else:
-            return jsonify({"error": "Non-event."}), 404
-
-    except Exception as e:
-        print(f"Error occurred while processing event date {event_date}: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-        driver.quit()
-@app.route('/start-scraping', methods=['POST'])
-def start_scraping():
-    data = request.json  # Get the original request payload
-    print("Received data:", data)  # Debugging line to see incoming request data
-
-    loopEvents = request.json.get('loopEvents', True)  # Get loopEvents from the JSON payload
-    loadHistory = request.json.get('loadHistory', False)  # Get loadHistory from the JSON payload
-    parkrunName = request.json.get('parkrunName', "default_parkrun")  # Get the parkrun name from the payload, with default
-    #return jsonify(message="Scraping started!"), 200
-    print(f"Parkrun selected: {parkrunName}")
-    print(f"Loop Event Type: {loopEvents}")
-
-    # Connect to the SQLite database
-    conn,cursor,render_db_conn,render_cursor=connections()
-    driver = create_webdriver()
-
-    ##################################
-    #parkrunName = "rodingvalley"
-    #updateFlag = False  # Default value; set to True when you want to update
-    #loopEvents = False # use this to run a different loop to collect at the beginning of the week
-    ##################################
-    try:
-        if loopEvents:
-            # Query to select all events
-            cursor.execute("""
-                WITH max_date_cte AS (
-                SELECT MAX(formatted_date) AS max_event_date
-                FROM parkrun_events_view),
-                latest_events AS (
-                SELECT event_code,
-                        MAX(formatted_date) AS latest_date
-                FROM parkrun_events_view
-                GROUP BY event_code),
-                filtered_events AS (
-                SELECT le.event_code
-                FROM latest_events le
-                JOIN max_date_cte md ON le.latest_date < md.max_event_date AND le.latest_date> date(md.max_event_date,'-7 days'))
-                SELECT e.event_code, e.event_name
-                FROM events e
-                JOIN filtered_events fe ON e.event_code = fe.event_code;
-            """)
-            events = cursor.fetchall()  # Fetch all records from events 
-            if not events:
-                cursor.execute("""
-                    WITH max_date_cte AS (
-                    SELECT MAX(substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)) AS max_event_date
-                    FROM parkrun_events),
-                    latest_events AS (
-                    SELECT event_code,
-                            MAX(substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2)) AS latest_date
-                    FROM parkrun_events
-                    GROUP BY event_code),
-                    filtered_events AS (
-                    SELECT le.event_code
-                    FROM latest_events le
-                    JOIN max_date_cte md ON le.latest_date <= md.max_event_date)
-                    SELECT e.event_code, e.event_name
-                    FROM events e
-                    JOIN filtered_events fe ON e.event_code = fe.event_code;
-                """)
-                events = cursor.fetchall()  # Fetch all records from events again
-            # Loop through each event for current period
-            for event in events:
-                event_code = event[0]  # Assuming the first column is event_code
-                event_name = event[1]  # Assuming the second column is event_name
-                print(f"Processing Event: {event_name} (Code: {event_code})")
-
-                if loadHistory:
-                    # Call the function to process the history of events
-                    process_parkrun_history(driver, cursor, render_cursor, conn, render_db_conn, event_code, event_name)
-                else:
-                    # Construct the URL for the current event using event_name
-                    url = f'https://www.parkrun.org.uk/{event_name.lower()}/results/latestresults/'
-                    print(f"In here: start_scraping-loopEvents for {event_name}")
-                    process_event_url(driver, cursor, render_cursor, url, event_code, event_name, conn, render_db_conn)
-
-        else:
-            # Process a specific parkrun if loopEvents is False
-            process_parkrun_history(driver, cursor, render_cursor, conn, render_db_conn, None, parkrunName)
-
-        
-        # Commit the changes and close the database connection
-        conn.commit()
-        render_db_conn.commit()
-
-        return jsonify(message="Scraping process completed successfully!"), 200  # Ensure a valid return
-    
-    except Exception as e:
-        print(f"Error occurred: {e}")
-        return jsonify({'error': str(e)}), 500
-    finally:
-        conn.close()
-        # Close the browser
-        driver.quit()
-class ProcessingStatus(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    status = db.Column(db.String(10), nullable=False)
-    updated_at = db.Column(db.DateTime, server_default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
-@app.route('/build', methods=['GET'])
-def create_tables():
-    db.create_all()  # 
-@app.route('/status', methods=['GET'])
-def get_status():
-    """Get the current processing status."""
-    print (f"get_status -1")
-    status_entry = ProcessingStatus.query.first()
-    print (f"get_status -2 {status_entry.status}")
-    if status_entry:
-        return jsonify({'status': status_entry.status}), 200
-    else:
-        return jsonify({'status': 'not set'}), 404
-@app.route('/start', methods=['POST'])
-def start_processing():
-    """Set the processing status to 'running'."""
-    status_entry = ProcessingStatus.query.first()
-    print (f"start_processing -2 {status_entry.status}")
-    
-    if status_entry:
-        status_entry.status = 'running'
-    else:
-        status_entry = ProcessingStatus(status='running')
-        db.session.add(status_entry)
-    
-    db.session.commit()
-    print (f"start_processing -3 status = started")
-    return jsonify({'status': 'started'}), 200
-@app.route('/stop', methods=['POST'])
-def stop_processing(): 
-    """Set the processing status to 'stopped'."""
-    status_entry = ProcessingStatus.query.first()
-    
-    if status_entry:
-        status_entry.status = 'stopped'
-        db.session.commit()
-        return jsonify({'status': 'stopped'}), 200
-    else:
-        return jsonify({'status': 'not set'}), 404      
-class ParkrunEvent(db.Model):                           # Define your ParRunEvents model
-    __tablename__ = 'parkrun_events'
-    event_code = db.Column(db.Integer, primary_key=True)
-    event_date = db.Column(db.String, nullable=False)
-    last_position = db.Column(db.Integer)
-    volunteers = db.Column(db.Integer)
-    event_number = db.Column(db.Integer)
-
-    __table_args__ = (db.UniqueConstraint('event_code', 'event_date', name='unique_event'),)
 @app.route('/delete_duplicates', methods=['POST']) 
 def delete_duplicates(): 
     try: 
@@ -3175,86 +1107,482 @@ def delete_duplicates():
             HAVING COUNT(*) > 1 ); 
             """ 
         result = db.session.execute(text(delete_query)) 
-        print("delete dupes:",result)
         db.session.commit() 
         return jsonify({'message': 'Duplicate rows deleted successfully', 'deleted_rows': result.rowcount}), 200 
     except Exception as e: 
         db.session.rollback() 
         return jsonify({'error': str(e)}), 500
-def get_event_number(event_code, event_date): 
-    try:
-        # Parse the event_date string to a datetime object 
-        #print(event_date)
-        event_date_obj = parse_date(event_date)
-        #print(event_date_obj)
-        # Check if the record exists 
-        formatted_event_date = event_date_obj.strftime('%d/%m/%Y') 
-        #print(formatted_event_date)
-    except ValueError: 
-        return None
-    event = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first() 
-
-    conn,cursor,render_db_conn,render_cursor=connections()
-    #driver = create_webdriver()
-    query = f'SELECT * FROM events WHERE event_code = {event_code};' # Use %s for PostgreSQL, ? for SQLite 
-    #print(query)
-    #cursor.execute(query, (event_code,))  
-    cursor.execute(query)    
-    eventN = cursor.fetchall()  # Fetch all records from events table
-    #print(eventN)
-    event_name = eventN[0][1]
-
-    if event: 
-        return event.event_number,event_name
     
-    # Calculate one week before and after 
-    one_week_before = (event_date_obj - timedelta(weeks=1)).strftime('%d/%m/%Y') 
-    one_week_after = (event_date_obj + timedelta(weeks=1)).strftime('%d/%m/%Y') 
-    #print(one_week_before)
-    #print(one_week_after)
-    # Fetch events for one week before and one week after 
-    before_event = db.session.execute( 
-        text("SELECT * FROM parkrun_events WHERE event_code = :event_code AND event_date = :event_date"), 
-        {"event_code": event_code, "event_date": one_week_before} ).fetchone() 
-    after_event = db.session.execute( 
-        text("SELECT * FROM parkrun_events WHERE event_code = :event_code AND event_date = :event_date"), 
-        {"event_code": event_code, "event_date": one_week_after} ).fetchone()   
-    #print(before_event)
-    #print(after_event)
-    #print(event_name)
-    if before_event and after_event: 
-        if before_event.event_number < 10000 and after_event.event_number == before_event.event_number + 2: 
-            return before_event.event_number + 1,event_name
+@app.route('/api/eventpositions', methods=['GET'])
+def get_event_positions():
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_date = request.args.get('event_date', default=None, type=str)
+
+    print(f"Received event_code: {event_code}, event_date: {event_date}")
+
+    sql = text("""
+    SELECT ep.*, a.total_runs
+    FROM eventpositions ep
+    LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
+    WHERE (:event_code IS NULL OR ep.event_code = :event_code)
+      AND (:event_date IS NULL OR ep.event_date = :event_date)
+    ORDER BY ep.position
+    """)
+
+    params = {'event_code': event_code, 'event_date': event_date}
+    result = db.session.execute(sql, params)
+
+    rows = [dict(r) for r in result.fetchall()]
+
+    return jsonify([{
+        'event_code': r.get('event_code'),
+        'event_date': r.get('event_date'),
+        'position': r.get('position'),
+        'name': r.get('name'),
+        'male_position': r.get('male_position'),
+        'male_count': r.get('male_count'),
+        'age_group': r.get('age_group'),
+        'age_grade': r.get('age_grade'),
+        'time': r.get('time'),
+        'club': r.get('club'),
+        'comment': r.get('comment'),
+        'athlete_code': r.get('athlete_code'),
+        'event_eligible_appearances': r.get('event_eligible_appearances'),
+        'time_ratio': r.get('time_ratio'),
+        'adj_time_seconds': r.get('adj_time_seconds'),
+        'adj_time_ratio': r.get('adj_time_ratio'),
+        'event_code_count': r.get('event_code_count'),
+        'tourist_flag': r.get('tourist_flag'),
+        'last_event_code_count': r.get('last_event_code_count'),
+        'age_ratio_male': r.get('age_ratio_male'),
+        'age_ratio_sex': r.get('age_ratio_sex'),
+        'super_tourist': r.get('super_tourist'),
+        'local_time_ratio': r.get('local_time_ratio'),
+        'adj2_time_seconds': r.get('adj2_time_seconds'),
+        'adj2_time_ratio': r.get('adj2_time_ratio'),
+        'distinct_courses_long': r.get('distinct_courses_long'),
+        'last_event_code_count_long': r.get('last_event_code_count_long'),
+        'total_runs_long': r.get('total_runs_long'),
+        'regular': r.get('regular'),
+        'returner': r.get('returner'),
+        'super_returner': r.get('super_returner'),
+        # new field from athletes table:
+		'total_runs': r.get('total_runs'),
+		'best_curve_ranking_current': r.get('best_curve_ranking_current'),
+		'best_curve_ranking_historic': r.get('best_curve_ranking_historic'),
+        'best_curve_ranking_current_type': r.get('best_curve_ranking_current_type'),
+        'event_rank_b': r.get('event_rank_b'),
+        'event_rank_e': r.get('event_rank_e'),
+        'event_rank_es': r.get('event_rank_es'),
+        'event_rank_ae': r.get('event_rank_ae'),
+        'event_rank_aes': r.get('event_rank_aes')
+    } for r in rows])
+
+@app.route('/api/eventpositions', methods=['DELETE'])
+def delete_event_positions():
+    data = request.get_json()  # Get the JSON payload
+    event_code = data.get('event_code')
+    event_date = data.get('event_date')
+
+    # Validate input
+    if not event_code or not event_date:
+        return jsonify({"error": "event_code and event_date are required"}), 400
+
+    try:
+        # Delete from eventpositions table
+        rows_deleted = db.session.query(EventPosition).filter(
+            EventPosition.event_code == event_code,
+            EventPosition.event_date == event_date
+        ).delete()
         
-    return None 
-with app.app_context(): 
-    inspector = inspect(db.engine)
-    tables = inspector.get_table_names()
-    print("Tables in the database:", tables)
+        db.session.commit()  # Commit changes to the database
+        return jsonify({"message": f"{rows_deleted} record(s) deleted from eventpositions."}), 200
+
+    except Exception as e:
+        db.session.rollback()  # Rollback in case of error
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/eventpositions/monthly-cascade', methods=['GET'])
+def get_event_positions_monthly_cascade():
+    event_code = request.args.get('event_code', default=None, type=int)
+
+    if event_code is None:
+        return jsonify({"error": "event_code is required"}), 400
+
+    sql = text("""
+    WITH base AS (
+        SELECT
+            ep.event_code,
+            ep.event_date,
+            COALESCE(ep.total_runs, a.total_runs, 0) AS total_runs,
+            COALESCE(ep.age_group, '') AS age_group,
+            COALESCE(ep.comment, '') AS comment,
+            COALESCE(CAST(ep.super_tourist AS TEXT), '') AS super_tourist,
+            COALESCE(ep.tourist_flag, '') AS tourist_flag,
+            COALESCE(ep.returner, '') AS returner,
+            COALESCE(ep.super_returner, '') AS super_returner,
+            COALESCE(ep.regular, '') AS regular,
+            COALESCE(ep.last_event_code_count_long, 0) AS last_event_code_count_long,
+            COALESCE(pe.last_position, 0) AS last_position,
+            to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt
+        FROM eventpositions ep
+        LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
+        LEFT JOIN parkrun_events pe ON pe.event_code = ep.event_code AND pe.event_date = ep.event_date
+        WHERE ep.event_code = :event_code
+          AND (pe.event_number IS NULL OR pe.event_number <= 10000)
+    ),
+    classified AS (
+        SELECT
+            event_date,
+            EXTRACT(MONTH FROM event_dt)::int AS month_idx,
+            last_position,
+            UPPER(BTRIM(age_group)) AS age_group_norm,
+            COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int AS age_start,
+            CASE
+                WHEN total_runs = 1 THEN 'g1_first_first_timer'
+                WHEN comment = 'First Timer!' THEN 'g2_first_timer_comment'
+                WHEN super_tourist IN ('1', 'T', 'True', 'true') THEN 'g3_super_tourist'
+                WHEN tourist_flag = 'T' THEN 'g4_tourist'
+                WHEN returner = 'T' OR super_returner = 'T' THEN 'g5_returner_or_super_returner'
+                WHEN regular = 'T' THEN 'g6_super_regular'
+                WHEN last_event_code_count_long > 10 THEN 'g7_last_event_code_count_long_gt10'
+                ELSE 'g8_rest'
+            END AS grp,
+            CASE
+                WHEN UPPER(BTRIM(age_group)) LIKE 'JM%' THEN 'a1_younger_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'YM%' THEN 'a2_adult_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'AM%' THEN 'a3_senior_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'SM%' THEN 'a2_adult_men'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'VM%' THEN
+                    CASE
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 65 THEN 'a5_super_vet_men'
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 50 THEN 'a4_veteran_men'
+                        ELSE 'a3_senior_men'
+                    END
+                WHEN UPPER(BTRIM(age_group)) LIKE 'JW%' THEN 'a6_younger_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'YW%' THEN 'a7_adult_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'AW%' THEN 'a8_senior_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'SW%' THEN 'a7_adult_women'
+                WHEN UPPER(BTRIM(age_group)) LIKE 'VW%' THEN
+                    CASE
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 65 THEN 'a10_super_vet_women'
+                        WHEN COALESCE(NULLIF(substring(UPPER(BTRIM(age_group)) from '([0-9]+)'), ''), '0')::int >= 50 THEN 'a9_veteran_women'
+                        ELSE 'a8_senior_women'
+                    END
+                ELSE 'a11_unclassified'
+            END AS age_super_grp
+        FROM base
+        WHERE event_dt IS NOT NULL
+    ),
+    per_event AS (
+        SELECT
+            event_date,
+            month_idx,
+            GREATEST(MAX(last_position) - COUNT(*), 0)::float AS unknown_count,
+            SUM(CASE WHEN grp = 'g1_first_first_timer' THEN 1 ELSE 0 END) AS g1,
+            SUM(CASE WHEN grp = 'g2_first_timer_comment' THEN 1 ELSE 0 END) AS g2,
+            SUM(CASE WHEN grp = 'g3_super_tourist' THEN 1 ELSE 0 END) AS g3,
+            SUM(CASE WHEN grp = 'g4_tourist' THEN 1 ELSE 0 END) AS g4,
+            SUM(CASE WHEN grp = 'g5_returner_or_super_returner' THEN 1 ELSE 0 END) AS g5,
+            SUM(CASE WHEN grp = 'g6_super_regular' THEN 1 ELSE 0 END) AS g6,
+            SUM(CASE WHEN grp = 'g7_last_event_code_count_long_gt10' THEN 1 ELSE 0 END) AS g7,
+            SUM(CASE WHEN grp = 'g8_rest' THEN 1 ELSE 0 END) AS g8,
+            SUM(CASE WHEN age_super_grp = 'a1_younger_men' THEN 1 ELSE 0 END) AS a1,
+            SUM(CASE WHEN age_super_grp = 'a2_adult_men' THEN 1 ELSE 0 END) AS a2,
+            SUM(CASE WHEN age_super_grp = 'a3_senior_men' THEN 1 ELSE 0 END) AS a3,
+            SUM(CASE WHEN age_super_grp = 'a4_veteran_men' THEN 1 ELSE 0 END) AS a4,
+            SUM(CASE WHEN age_super_grp = 'a5_super_vet_men' THEN 1 ELSE 0 END) AS a5,
+            SUM(CASE WHEN age_super_grp = 'a6_younger_women' THEN 1 ELSE 0 END) AS a6,
+            SUM(CASE WHEN age_super_grp = 'a7_adult_women' THEN 1 ELSE 0 END) AS a7,
+            SUM(CASE WHEN age_super_grp = 'a8_senior_women' THEN 1 ELSE 0 END) AS a8,
+            SUM(CASE WHEN age_super_grp = 'a9_veteran_women' THEN 1 ELSE 0 END) AS a9,
+            SUM(CASE WHEN age_super_grp = 'a10_super_vet_women' THEN 1 ELSE 0 END) AS a10,
+            SUM(CASE WHEN age_super_grp = 'a11_unclassified' THEN 1 ELSE 0 END) AS a11
+        FROM classified
+        GROUP BY event_date, month_idx
+    ),
+    per_month AS (
+        SELECT
+            month_idx,
+            COUNT(*)::int AS events_in_month,
+            AVG(unknown_count)::float AS unknown_avg,
+            AVG(g1)::float AS g1_avg,
+            AVG(g2)::float AS g2_avg,
+            AVG(g3)::float AS g3_avg,
+            AVG(g4)::float AS g4_avg,
+            AVG(g5)::float AS g5_avg,
+            AVG(g6)::float AS g6_avg,
+            AVG(g7)::float AS g7_avg,
+            AVG(g8)::float AS g8_avg,
+            AVG(a1)::float AS a1_avg,
+            AVG(a2)::float AS a2_avg,
+            AVG(a3)::float AS a3_avg,
+            AVG(a4)::float AS a4_avg,
+            AVG(a5)::float AS a5_avg,
+            AVG(a6)::float AS a6_avg,
+            AVG(a7)::float AS a7_avg,
+            AVG(a8)::float AS a8_avg,
+            AVG(a9)::float AS a9_avg,
+            AVG(a10)::float AS a10_avg,
+            AVG(a11)::float AS a11_avg
+        FROM per_event
+        GROUP BY month_idx
+    ),
+    months AS (
+        SELECT generate_series(1, 12) AS month_idx
+    )
+    SELECT
+        m.month_idx,
+        to_char(make_date(2000, m.month_idx, 1), 'Mon') AS month_label,
+        COALESCE(pm.events_in_month, 0) AS events_in_month,
+        COALESCE(pm.unknown_avg, 0) AS unknown_avg,
+        COALESCE(pm.g1_avg, 0) AS first_first_timer_avg,
+        COALESCE(pm.g2_avg, 0) AS first_timer_comment_avg,
+        COALESCE(pm.g3_avg, 0) AS super_tourist_avg,
+        COALESCE(pm.g4_avg, 0) AS tourist_avg,
+        COALESCE(pm.g5_avg, 0) AS returner_or_super_returner_avg,
+        COALESCE(pm.g6_avg, 0) AS super_regular_avg,
+        COALESCE(pm.g7_avg, 0) AS regular_avg,
+        COALESCE(pm.g7_avg, 0) AS last_event_code_count_long_gt10_avg,
+        COALESCE(pm.g8_avg, 0) AS rest_avg,
+        COALESCE(pm.a1_avg, 0) AS younger_men_avg,
+        COALESCE(pm.a2_avg, 0) AS adult_men_avg,
+        COALESCE(pm.a3_avg, 0) AS senior_men_avg,
+        COALESCE(pm.a4_avg, 0) AS veteran_men_avg,
+        COALESCE(pm.a5_avg, 0) AS super_vet_men_avg,
+        COALESCE(pm.a6_avg, 0) AS younger_women_avg,
+        COALESCE(pm.a7_avg, 0) AS adult_women_avg,
+        COALESCE(pm.a8_avg, 0) AS senior_women_avg,
+        COALESCE(pm.a9_avg, 0) AS veteran_women_avg,
+        COALESCE(pm.a10_avg, 0) AS super_vet_women_avg,
+        COALESCE(pm.a11_avg, 0) AS unclassified_avg
+    FROM months m
+    LEFT JOIN per_month pm ON pm.month_idx = m.month_idx
+    ORDER BY m.month_idx;
+    """)
+
+    try:
+        result = db.session.execute(sql, {'event_code': event_code})
+        rows = [dict(r) for r in result.fetchall()]
+        return jsonify(rows), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/eventTimeAdjustment', methods=['GET'])
+def get_event_time_adjustment():
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_date = request.args.get('event_date', default=None, type=str)
+
+    print(f"Received event_code: {event_code}, event_date: {event_date}")
+
+    sql = text(f"""
+    WITH tmp_time_adjustment AS (
+        SELECT 
+            e.event_date,
+            e.event_code,
+            time,
+            athlete_code,
+            age_ratio_male,
+            age_ratio_sex,
+            substring(e.event_date, 7, 4) || chr(45) || substring(e.event_date, 4, 2) || chr(45) || substring(e.event_date, 1, 2) AS formatted_date,
+            CASE
+                WHEN length(time) - length(replace(time, ':', '')) = 2 THEN
+                    CAST(substring(time, 1, strpos(time, ':') - 1) AS INTEGER) * 3600 +
+                    CAST(substring(time, strpos(time, ':') + 1, strpos(substring(time, strpos(time, ':') + 1), ':') - 1) AS INTEGER) * 60 +
+                    CAST(substring(time, length(time) - 1, 2) AS INTEGER)
+                ELSE
+                    CAST(substring(time, 1, strpos(time, ':') - 1) AS INTEGER) * 60 +
+                    CAST(substring(time, strpos(time, ':') + 1) AS INTEGER)
+            END AS time_seconds,
+            adj_time_seconds,
+            adj2_time_seconds,
+            coeff,
+            coeff_event
+        FROM eventpositions e
+        JOIN parkrun_events p ON e.event_code = p.event_code AND e.event_date = p.event_date
+        WHERE (:event_code IS NULL OR e.event_code = :event_code)
+          AND (:event_date IS NULL OR e.event_date = :event_date)
+    )
+    SELECT 
+        formatted_date,
+        event_code,
+        athlete_code,
+        coeff AS season_adj,
+        coeff + coeff_event - 1 AS event_adj,
+        age_ratio_male AS age_adj,
+        age_ratio_sex / age_ratio_male AS sex_adj,
+        time,
+        {get_adjustment_fields_sql()}
+    FROM tmp_time_adjustment
+    ORDER BY age_event_adj_time
+    """)
+    
+    # accept either min_sec or min_seconds query param; default 12:49 -> 769 seconds
+    min_param = request.args.get('min_sec')
+    if min_param is None:
+        min_param = request.args.get('min_seconds')
+    try:
+        min_seconds = int(min_param) if min_param is not None else 12 * 60 + 49
+    except (TypeError, ValueError):
+        min_seconds = 12 * 60 + 49
+        
+    params = {'event_code': event_code, 'event_date': event_date, 'min_sec': min_seconds}
+    result = db.session.execute(sql, params)
+
+    rows = [dict(r) for r in result.fetchall()]
+
+    return jsonify(rows)
+
+
+@app.route('/api/parkrun_events', methods=['GET'])
+def get_parkrun_events():
+    event_code = request.args.get('event_code', default=None, type=int)
+    
+    if event_code is not None:
+        try:
+            event_code = int(event_code)  # Ensure it's an integer
+        except ValueError:
+            return jsonify({"error": "Invalid event_code"}), 400
+
+    events = ParkrunEvent.query.filter_by(event_code=event_code).all()
+    print(f"Filtered event_code: {event_code}, Found {len(events)} events.")  # Debugging line
+    
+    formatted_events = [event.to_dict() for event in events]
+    return jsonify(formatted_events)
+
+@app.route('/api/parkrun_event', methods=['GET'])
+def get_parkrun_event():
+    # Retrieve event_code, event_date, and event_number from query parameters
+    event_code = request.args.get('event_code', default=None, type=int)  # Get event_code
+    event_date = request.args.get('event_date', default=None, type=str)  # Get event_date
+    event_number = request.args.get('event_number', default=None, type=int)  # Get event_number
+
+    # Validate input
+    if event_code is None:
+        return jsonify({"error": "event_code is required"}), 400
+
+    if event_date is None and event_number is None:
+        return jsonify({"error": "Either event_date or event_number is required"}), 400
+    try:
+        # Fetch the specific event based on event_code and event_date or event_number
+        if event_number is not None:
+            event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_number=event_number).first()
+        else:
+            #event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first()
+            event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=event_date).first()
+
+        if event_record:
+            return jsonify(event_record.to_dict()), 200  # Return the found record
+            
+        else:
+            return jsonify({"error": "Event not found for the given code and date/number."}), 404
+
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+from flask import jsonify, request
+from sqlalchemy import func
+
+@app.route('/api/last_positions', methods=['GET'])
+def get_last_positions():
+    event_code = request.args.get('event_code', default=None, type=int)
+
+    if event_code is None:
+        return jsonify({"error": "event_code is required"}), 400
+
+    # Query to get last positions for the specified event_code
+    try:
+        last_positions_query = (
+            db.session.query(
+                EventPosition.event_code,
+                EventPosition.event_date,  # Get the event date directly
+                func.max(EventPosition.position).label('last_position')  # Find the last position for the week
+            )
+            .filter(EventPosition.event_code == event_code)  # Filter by the given event_code
+            .group_by(
+                EventPosition.event_code,
+                EventPosition.event_date  # Group by event code and event date
+            )
+            .all()
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not last_positions_query:
+        return jsonify({"message": "No records found for this event code"}), 404
+
+    # Helper function to convert dd/mm/yyyy to ISO format (yyyy-mm-dd)
+    def format_date_to_iso(date_str):
+        try:
+            if isinstance(date_str, str) and '/' in date_str:
+                # Assume dd/mm/yyyy format
+                parts = date_str.split('/')
+                if len(parts) == 3:
+                    day, month, year = parts
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            return str(date_str)  # Return as-is if not in expected format
+        except:
+            return str(date_str)  # Return as-is if conversion fails
+
+    # Prepare the response with both original and formatted dates
+    last_positions = [{
+        'event_code': code,
+        'event_date': date,  # Use event_date directly (original dd/mm/yyyy format)
+        'formatted_date': format_date_to_iso(str(date)),  # ISO format (yyyy-mm-dd) for proper sorting
+        'last_position': last_position
+    } for code, date, last_position in last_positions_query]
+
+    return jsonify(last_positions)  # Return the retrieved last positions as JSON
+
+@app.route('/api/parkrun_events', methods=['DELETE'])
+def delete_parkrun_events():
+    data = request.get_json()  # Get the JSON payload
+    event_code = data.get('event_code')
+    event_date = data.get('event_date')
+
+    # Validate input
+    if not event_code or not event_date:
+        return jsonify({"error": "event_code and event_date are required"}), 400
+
+    try:
+        # Delete from parkrun_events table
+        rows_deleted = db.session.query(ParkrunEvent).filter(
+            ParkrunEvent.event_code == event_code,
+            ParkrunEvent.event_date == event_date
+        ).delete()
+
+        db.session.commit()  # Commit changes to the database
+        return jsonify({"message": f"{rows_deleted} record(s) deleted from parkrun_events."}), 200
+
+    except Exception as e:
+        db.session.rollback()  # Rollback in case of error
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/process_events', methods=['POST'])
 def process_events():
     data = request.get_json() 
-    event_code = data.get('event_code')    
+    if data is None: 
+        return jsonify({'error': 'No JSON payload received'}), 400 
+    event_code = data.get('event_code') 
+    if event_code is None: 
+        return jsonify({'error': 'event_code not provided'}), 400
     print(f"process_events -1 event_code = {event_code}")
     print(event_code)
-    events = []
-    # Direct SQL Query
-    if event_code is not None:
-        with db.engine.connect() as connection:
-            result = connection.execute(text("SELECT * FROM parkrun_events WHERE event_code = :event_code"), {"event_code": event_code})
-            events = [row._mapping for row in result]
-            #print(f"Direct SQL Query Fetched events: {events}")
-    #print(f"events = {events}")
+    events = [] 
+    if event_code is not None: 
+        with db.engine.connect() as connection: 
+            result = connection.execute(text("SELECT * FROM parkrun_events WHERE event_code = :event_code"), {"event_code": event_code}) 
+            events = [dict(row.items()) for row in result.mappings()] 
+            #print(f"Direct SQL Query Fetched events: {events}"
     if not events:
         return jsonify({'error': 'No events found for the specified event code'}), 404
-    # Fetch all records in the table for debugging
-    #all_events = parkrun_events.query.all()
-    #print(f"All events in the table: {all_events}")
 
     # Convert fetched events to a list of dictionaries for easier manipulation
     events_data = [{'event_date': event['event_date'], 'event_number': event['event_number']} for event in events]
-    #print(f"process_events -2 event_data count: {len(events_data)}")
-    #print(f"Events Data: {events_data}")
+
 
     # Sort events to ensure they are in the correct order
     events_data.sort(key=lambda x: datetime.strptime(x['event_date'], '%d/%m/%Y'))
@@ -3268,8 +1596,6 @@ def process_events():
         if current_event['event_number'] > 10000:
             # Case 1: Check if it has the earliest date
             print(f"test {i}, {events_data[i - 1]['event_number']}, {current_event['event_number']}, {events_data[i + 1]['event_number']},{current_event['event_date']}")
-            #if i == 0 or datetime.strptime(current_event['event_date'], '%d/%m/%Y') < datetime.strptime(events_data[0]['event_date'], '%d/%m/%Y'):
-            #    events_to_delete.add(tuple(current_event.items()))
 
             # Case 2: Check if the previous event number is correct
             if i > 0 and i < len(events_data) - 1 and int(events_data[i - 1]['event_number']) + 2 == int(events_data[i + 1]['event_number']):
@@ -3287,206 +1613,646 @@ def process_events():
     db.session.commit()  # Submit the changes to the database
 
     return jsonify({'message': 'Processing complete', 'deleted_records': deleted_records}), 200
-@app.route('/event-data', methods=['GET'])
-def get_event_data():
-    """API endpoint to fetch event data."""
-    startDate = request.args.get('startDate', default=None, type=str)   
-    if not startDate:
-        return jsonify({"error": "startDate is required"}), 400  # Return an error if startDate is missing
-    return fetch_event_data(startDate)  # Pass startDate to the fetch_event_data function
-@app.route('/coeff-startDate', methods=['GET'])
-def coeffStartDate():
+
+@app.route('/api/events', methods=['GET'])
+def get_events():
+    events = Event.query.all()  # Fetching event names and codes
+    return jsonify([{
+        'event_code': e.event_code,
+        'event_name': e.event_name
+    } for e in events])  # Return as JSON
+
+
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    """Get the current processing status."""
+    status_entry = ProcessingStatus.query.first()
+    if status_entry:
+        return jsonify({'status': status_entry.status}), 200
+    else:
+        return jsonify({'status': 'not set'}), 404
+
+@app.route('/api/start', methods=['POST'])
+def start_processing():
+    """Set the processing status to 'running'."""
+    status_entry = ProcessingStatus.query.first()
+    
+    if status_entry:
+        status_entry.status = 'running'
+    else:
+        status_entry = ProcessingStatus(status='running')
+        db.session.add(status_entry)
+    
+    db.session.commit()
+    return jsonify({'status': 'started'}), 200
+
+@app.route('/api/stop', methods=['POST'])
+def stop_processing():
+    """Set the processing status to 'stopped'."""
+    status_entry = ProcessingStatus.query.first()
+    
+    if status_entry:
+        status_entry.status = 'stopped'
+        db.session.commit()
+        return jsonify({'status': 'stopped'}), 200
+    else:
+        return jsonify({'status': 'not set'}), 404   
+
+@app.route('/')
+def hello():
+    return 'How quickly will this update the front-end?'
+
+@app.route('/build', methods=['GET'])
+def create_tables():
+    db.create_all()  # 
+
+@app.route('/api/event-data', methods=['GET'])
+def fetch_event_data():
+    """Fetch event data from the database and return it as JSON."""
     try:
-        start_date = get_coeff_start_date()  # Call the function from analytics.py
+        query = text('''
+            WITH first_15_dates AS (
+                SELECT DISTINCT event_date
+                FROM parkrun_events
+                ORDER BY to_date(event_date, 'DD/MM/YYYY')
+                LIMIT 15
+            )
+            SELECT event_code, event_date, time, athlete_code
+            FROM eventpositions
+            WHERE event_date IN (SELECT event_date FROM first_15_dates)
+            ORDER BY athlete_code;
+        ''')
+
+        rows = db.session.execute(query).mappings().all()
+        result = [dict(row) for row in rows]
+
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/results', methods=['GET'])
+def get_results():
+    """Get most recent results or all results from a supplied start date (inclusive)."""
+    try:
+        print("Fetching results from the database...")
+
+        # Get limit from query params, default to 15, clamp to max 100
+        limit = request.args.get('limit', default=15, type=int)
+        limit = max(1, min(limit, 100))  # Prevent abuse
+
+        # Optional start date (YYYY-MM-DD). If provided we'll return all records from that date (inclusive).
+        start_date = request.args.get('date', default=None, type=str)
+        params = {'limit': limit}
+
         if start_date:
-            return jsonify({"startDate": start_date}), 200
+            # validate format
+            try:
+                datetime.strptime(start_date, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+
+            query = """
+                SELECT 
+                  fe.event_code,
+                  e.event_name,
+                  fe.event_date,
+                  fe.last_position,
+                  fe.volunteers,
+                  fe.event_number,
+                  fe.coeff,
+                  fe.obs,
+                  fe.coeff_event,
+                  fe.avg_time,
+                  fe.avgtimelim12,
+                  fe.avgtimelim5,
+                  fe.tourist_count,
+                  fe.super_tourist_count,
+                  fe.regulars,
+                  fe.avg_age,
+                  fe.first_timers_count,
+                  fe.returners_count,
+                  fe.club_count,
+                  fe.pb_count,
+                  fe.recentbest_count,
+                  fe.eligible_time_count,
+                  fe.unknown_count,
+                  fe.super_returner_count
+                FROM (
+                  SELECT *,
+                         substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+                  FROM parkrun_events
+                ) fe
+                JOIN events e ON fe.event_code = e.event_code
+                WHERE fe.formatted_date >= :start_date
+                ORDER BY fe.formatted_date DESC, fe.event_code;
+            """
+            params['start_date'] = start_date
         else:
-            return jsonify({"error": "No data found"}), 404
-    except Exception as e:
-        print(f"Error in API /coeff-startDate: {e}")
-        return jsonify({"error": str(e)}), 500
-@app.route('/transformed-event-data', methods=['POST'])
-def transformed_event_data():
-    """API endpoint to fetch and transform event data."""
-    try:
-        # Get the cutoff value from query parameters
- 
-        data = request.get_json()
-        pivot = data.get('pivot')
-        lowest_times = data.get('lowest_times')
-        counts = data.get('counts')
-        cutoff = data.get('cutoff')  # Get the cutoff value from the request body
-        # Validate the input data
-        if not pivot or not lowest_times or not counts:
-            return jsonify({'error': 'Missing required data (pivot, lowest_times, counts)'}), 400
-        # Transform the data with the cutoff
-        result = get_transformed_event_data(pivot, lowest_times, counts, cutoff)
+            # original latest-n-dates query
+            query = """
+                WITH formatted_events AS (
+                  SELECT *,
+                         substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+                  FROM parkrun_events
+                ),
+                
+                latest_dates AS (
+                  SELECT DISTINCT formatted_date
+                  FROM formatted_events
+                  ORDER BY formatted_date DESC
+                  LIMIT :limit
+                )
+                
+                SELECT 
+                  fe.event_code,
+                  e.event_name,
+                  fe.event_date,
+                  fe.last_position,
+                  fe.volunteers,
+                  fe.event_number,
+                  fe.coeff,
+                  fe.obs,
+                  fe.coeff_event,
+                  fe.avg_time,
+                  fe.avgtimelim12,
+                  fe.avgtimelim5,
+                  fe.tourist_count,
+                  fe.super_tourist_count,
+                  fe.regulars,
+                  fe.avg_age,
+                  fe.first_timers_count,
+                  fe.returners_count,
+                  fe.club_count,
+                  fe.pb_count,
+                  fe.recentbest_count,
+                  fe.eligible_time_count,
+                  fe.unknown_count,
+                  fe.super_returner_count
+                FROM formatted_events fe
+                JOIN events e ON fe.event_code = e.event_code
+                WHERE fe.formatted_date IN (SELECT formatted_date FROM latest_dates)
+                ORDER BY fe.formatted_date DESC, fe.event_code;
+            """
 
-        # Return the transformed data as a JSON response
+        result_proxy = db.session.execute(query, params)
+        rows = result_proxy.fetchall()
+        columns = result_proxy.keys()
+        result = [dict(zip(columns, row)) for row in rows]
+
+        print(f"Fetched {len(result)} results from the database.")
         return jsonify(result), 200
+
     except Exception as e:
-        print(f"Error in /transformed-event-data: {e}")
         return jsonify({'error': str(e)}), 500
-@app.route('/optimize-event-times', methods=['POST'])  # Updated to POST for sending larger data
-def optimize_event_times():
-    """API endpoint to optimize event times."""
-    print("In here: optimize_event_times")
+
+@app.route('/resultsAll', methods=['GET'])
+def get_resultsAll():
+    """Get most recent results."""
     try:
-        # Get the JSON data sent from the client
-        data = request.get_json()
-        pivot_data = data['pivot']
-        change_value = data['changeValue']
-        event_date = data['eventDate']
-        #event_code = data['eventCode']
-        #coeff=data['coeff']
-        counts = data['counts']
+        print("Fetching results from the database...")
 
-        #print("event_Date=",event_date)
-        # Establish database connections
-        conn, sqlite_cursor, render_db_conn, render_cursor = connections()
-        # Call the logic function from analytics.py
-        result = optimize_event_times_logic(pivot_data, change_value, event_date, counts, sqlite_cursor, render_cursor)
-        normalize_coefficients(event_date)
-        # Commit changes to both databases
-        conn.commit()
-        render_db_conn.commit()
+        query = """
+            WITH formatted_events AS (
+              SELECT *,
+                     substr(event_date, 7, 4) || '-' || substr(event_date, 4, 2) || '-' || substr(event_date, 1, 2) AS formatted_date
+              FROM parkrun_events
+            )
+            
+            SELECT 
+              fe.event_code,
+              e.event_name,
+              fe.event_date,
+              fe.last_position,
+              fe.volunteers,
+              fe.event_number,
+              fe.coeff,
+              fe.obs,
+              fe.coeff_event,
+              fe.avg_time,
+              fe.avgtimelim12,
+              fe.avgtimelim5,
+              fe.tourist_count,
+              fe.super_tourist_count,
+              fe.regulars,
+              fe.avg_age,
+              fe.first_timers_count,
+              fe.returners_count,
+              fe.club_count,
+              fe.pb_count,
+              fe.recentbest_count,
+              fe.eligible_time_count,
+              fe.unknown_count,
+              fe.super_returner_count
+            FROM formatted_events fe
+            JOIN events e ON fe.event_code = e.event_code
+            ORDER BY fe.formatted_date DESC, fe.event_code;
+        """
 
-        # Return the result as a JSON response
+        result_proxy = db.session.execute(query)
+        rows = result_proxy.fetchall()
+        columns = result_proxy.keys()
+        result = [dict(zip(columns, row)) for row in rows]
+
+        print(f"Fetched {len(result)} results from the database.")
         return jsonify(result), 200
+
     except Exception as e:
-        print(f"Error in /optimize-event-times: {e}")  # Log the error
-
-        # Roll back changes in case of an error
-        if 'conn' in locals():
-            conn.rollback()
-        if 'render_db_conn' in locals():
-            render_db_conn.rollback()
-
         return jsonify({'error': str(e)}), 500
 
-    finally:
-        # Close database connections
-        if 'conn' in locals():
-            conn.close()
-        if 'render_db_conn' in locals():
-            render_db_conn.close()
-@app.route('/get-coefficients', methods=['GET'])
-def get_coefficients():
-    """API endpoint to fetch coefficients for all event_codes and event_dates."""
+@app.route('/api/eventinfo', methods=['GET'])
+def get_event_info():
+    event_number = request.args.get('event_number', type=int)
+    event_code = request.args.get('event_code', type=int)
+    # accept both event_name and display_name param names
+    event_name = request.args.get('event_name', type=str) or request.args.get('display_name', type=str)
+    event_date = request.args.get('event_date', type=str)
+
+    if not event_date or (event_number is None and event_code is None and not event_name):
+        return jsonify({"error": "Provide event_date and one of event_number, event_code or event_name"}), 400
+
+    # Build date variants to try (keep original first)
+    dates_to_try = [event_date]
     try:
-        # Call the function from database.py
-        coefficients = fetch_coefficients_for_all_events()
-        return jsonify(coefficients), 200
-    except Exception as e:
-        print(f"Error in /get-coefficients: {e}")
-        return jsonify({'error': str(e)}), 500
-@app.route('/reset-coefficients', methods=['POST'])
-def reset_coefficients():
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', event_date):
+            y, m, d = event_date.split('-')
+            alt = f"{d}/{m}/{y}"
+            if alt not in dates_to_try:
+                dates_to_try.append(alt)
+        if re.match(r'^\d{2}/\d{2}/\d{4}$', event_date):
+            d, m, y = event_date.split('/')
+            alt2 = f"{y}-{m}-{d}"
+            if alt2 not in dates_to_try:
+                dates_to_try.append(alt2)
+    except Exception:
+        pass
+
     try:
-        data = request.json
-        event_date = data.get('eventDate')
+        # Base query joins parkrun_events with events to get display_name
+        q = db.session.query(ParkrunEvent, Event).join(Event, ParkrunEvent.event_code == Event.event_code)
 
-        if not event_date:
-            return jsonify({'error': 'Event date is required'}), 400
+        record = None
+        if event_number is not None:
+            record = q.filter(ParkrunEvent.event_number == event_number, ParkrunEvent.event_date.in_(dates_to_try)).first()
 
-        # Reset coefficients in the database
-        conn, cursor, _, _ = connections()
-        cursor.execute('''
-            UPDATE parkrun_events
-            SET coeff = 1.0
-            WHERE event_date = ?;
-        ''', (event_date,))
-        conn.commit()
-        conn.close()
+        if record is None and event_code is not None:
+            record = q.filter(ParkrunEvent.event_code == event_code, ParkrunEvent.event_date.in_(dates_to_try)).first()
 
-        return jsonify({'message': f'Coefficients for {event_date} reset to 1.0'}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-@app.route('/api/most_recent_date', methods=['GET'])
-def most_recent_date():
-    """
-    API endpoint to get the most recent event_date where coeff is not equal to 1.
-    """
-    try:
-        # Connect to the SQLite database
-        conn, sqlite_cursor, _, _ = connections()
+        if record is None and event_name:
+            # case-insensitive match on event_name
+            record = q.filter(func.lower(Event.event_name) == func.lower(event_name), ParkrunEvent.event_date.in_(dates_to_try)).first()
 
-        # Call the function to get the most recent date
-        most_recent_date = get_most_recent_date_with_coeff_not_one(sqlite_cursor)
+        if not record:
+            return jsonify({"error": "Event not found"}), 404
 
-        # Close the database connection
-        conn.close()
-
-        # Return the result as JSON
-        if most_recent_date:
-            return jsonify({"most_recent_date": most_recent_date}), 200
-        else:
-            return jsonify({"message": "No rows found where coeff <> 1"}), 404
+        pe, ev = record  # tuple: (ParkrunEvent, Event)
+        display = ev.display_name or ev.event_name
+        return jsonify({
+            "event_number": pe.event_number,
+            "event_name": display,
+            "event_code": pe.event_code
+        }), 200
 
     except Exception as e:
-        # Handle errors and return a 500 response
+        app.logger.exception("get_event_info error")
         return jsonify({"error": str(e)}), 500
-@app.route('/update-coeffs', methods=['POST'])
-def update_coeffs():
-    try:
-        check_and_update_events() 
-        return jsonify({'message': 'Coefficients updated successfully!'}), 200
-    except Exception as e:
-        print(f"Error in /update-coeffs: {e}")
-        return jsonify({'error': str(e)}), 500
-@app.route('/update-eligible', methods=['POST'])
-def update_eligible():
-    try:
-        update_eligible_times_for_all_weeks()  # Pass True to update eligible times
-        return jsonify({'message': 'Eligible times updated successfully!'}), 200
-    except Exception as e:
-        print(f"Error in /update-eligible: {e}")
-        return jsonify({'error': str(e)}), 500
-@app.route('/eventpositions', methods=['GET'])
-def api_get_eventpositions():
-    # Accept either event_code or event_name; event_date is required
+
+@app.route('/api/eventby_number', methods=['GET'])
+def get_event_by_number():
+    """Return event_date and optional event_name for a supplied event_code + event_number.
+       Query params: event_code (int), event_number (int)
+    """
     event_code = request.args.get('event_code', default=None, type=int)
-    event_name = request.args.get('event_name', default=None, type=str)
-    event_date = request.args.get('event_date', default=None, type=str)
+    event_number = request.args.get('event_number', default=None, type=int)
 
-    if not event_date:
-        return jsonify({"error": "event_date is required"}), 400
+    if event_code is None or event_number is None:
+        return jsonify({"error": "Provide event_code and event_number"}), 400
 
-    conn, cursor, render_db_conn, render_cursor = connections()
     try:
-        # If event_name provided, look up the code
-        if event_code is None and event_name:
-            cursor.execute('SELECT event_code FROM events WHERE event_name = ? LIMIT 1', (event_name,))
-            row = cursor.fetchone()
-            if not row:
-                return jsonify({"error": "event_name not found"}), 404
-            event_code = row[0]
+        # Use SQLAlchemy to query parkrun_events joined to events for display_name
+        q = db.session.query(ParkrunEvent, Event).join(Event, ParkrunEvent.event_code == Event.event_code)
+        rec = q.filter(ParkrunEvent.event_code == event_code, ParkrunEvent.event_number == event_number).first()
 
-        if event_code is None:
-            return jsonify({"error": "event_code or event_name is required"}), 400
+        if not rec:
+            return jsonify({"error": "Event not found"}), 404
 
-        # Import locally to avoid modifying top-of-file imports if you prefer
-        from database import get_single_section_sql
+        pe, ev = rec  # ParkrunEvent, Event
+        display_name = ev.display_name or ev.event_name if ev is not None else None
 
-        # Render SQL for the section (this will substitute params safely using debug_sql_render_named)
-        sql = get_single_section_sql(
-            'get_eventpositions',
-            filename='newSQL.sql',
-            params={'event_code': event_code, 'event_date': event_date}
-        )
-
-        # Execute and return results
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        cols = [d[0] for d in cursor.description] if cursor.description else []
-        result = [dict(zip(cols, r)) for r in rows]
-        return jsonify(result), 200
+        return jsonify({
+            'event_code': pe.event_code,
+            'event_number': pe.event_number,
+            'event_date': pe.event_date,
+            'event_name': display_name
+        }), 200
 
     except Exception as e:
-        conn.rollback()
+        app.logger.exception("get_event_by_number error")
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()    
+
+@app.route('/api/curve-rank-reference', methods=['GET'])
+def get_curve_rank_reference():
+    rank_type = (request.args.get('rank_type') or 'B').strip().upper()
+    allowed_rank_types = {'B', 'E', 'ES', 'AE', 'AES'}
+    if rank_type not in allowed_rank_types:
+        rank_type = 'B'
+
+    requested_reference_version = (request.args.get('reference_version') or '').strip()
+
+    def _seconds_to_time_label(value):
+        if value is None:
+            return None
+        total_seconds = max(0, int(round(float(value))))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
+    def _load_reference_from_postgres_table():
+        table_exists = bool(
+            db.session.execute(text("SELECT to_regclass('public.curve_time_ranks_reference') IS NOT NULL")).scalar()
+        )
+        if not table_exists:
+            return None
+
+        latest_version_sql = text("""
+            SELECT MAX(curve_rank_reference_version) AS curve_rank_reference_version
+            FROM curve_time_ranks_reference
+            WHERE metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+        """)
+        latest_version = db.session.execute(latest_version_sql).scalar()
+        if latest_version is None:
+            return None
+
+        versions_sql = text("""
+            SELECT DISTINCT curve_rank_reference_version
+            FROM curve_time_ranks_reference
+            WHERE metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+            ORDER BY curve_rank_reference_version DESC
+        """)
+        version_rows = db.session.execute(versions_sql).fetchall()
+        available_versions = [row[0].isoformat() for row in version_rows if row[0] is not None]
+        selected_version = requested_reference_version if requested_reference_version in available_versions else latest_version.isoformat()
+
+        rows_sql = text("""
+            SELECT
+                curve_rank_group AS curved_rank_group,
+                curve_rank_reference_version,
+                min_seconds,
+                max_seconds,
+                min_time,
+                max_time,
+                actual_group_cnt,
+                score_lower,
+                score_upper
+            FROM curve_time_ranks_reference
+            WHERE metric_type = :rank_type
+              AND curve_rank_reference_version = CAST(:reference_version AS DATE)
+            ORDER BY curve_rank_group DESC
+        """)
+        result = db.session.execute(rows_sql, {
+            'rank_type': rank_type,
+            'reference_version': selected_version,
+        })
+
+        rows = []
+        for row in result.fetchall():
+            record = dict(row._mapping)
+            min_seconds = record.get('min_seconds')
+            max_seconds = record.get('max_seconds')
+            snapshot_date = record.get('curve_rank_reference_version')
+            rows.append({
+                'curved_rank_group': record.get('curved_rank_group'),
+                'curve_rank_reference_version': snapshot_date.isoformat() if snapshot_date is not None else selected_version,
+                'min_seconds': min_seconds,
+                'max_seconds': max_seconds,
+                'min_time': record.get('min_time') or _seconds_to_time_label(min_seconds),
+                'max_time': record.get('max_time') or _seconds_to_time_label(max_seconds),
+                'score_lower': record.get('score_lower'),
+                'score_upper': record.get('score_upper'),
+                'actual_group_cnt': record.get('actual_group_cnt'),
+            })
+
+        return {
+            'rank_type': rank_type,
+            'curve_rank_reference_version': selected_version,
+            'latest_curve_rank_reference_version': latest_version.isoformat(),
+            'available_curve_rank_reference_versions': available_versions,
+            'rows': rows
+        }
+
+    postgres_reference_payload = _load_reference_from_postgres_table()
+    if postgres_reference_payload is not None:
+        return jsonify(postgres_reference_payload), 200
+
+    latest_version_sql = text("""
+        SELECT MAX(snapshot_date) AS snapshot_date
+        FROM curve_rank_range_summary
+        WHERE period_type = 'ALL'
+          AND metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+    """)
+    latest_version = db.session.execute(latest_version_sql).scalar()
+    if latest_version is None:
+        return jsonify({
+            'rank_type': rank_type,
+            'curve_rank_reference_version': None,
+            'latest_curve_rank_reference_version': None,
+            'available_curve_rank_reference_versions': [],
+            'rows': []
+        }), 200
+
+    versions_sql = text("""
+        SELECT DISTINCT snapshot_date
+        FROM curve_rank_range_summary
+        WHERE period_type = 'ALL'
+          AND metric_type IN ('B', 'E', 'ES', 'AE', 'AES')
+        ORDER BY snapshot_date DESC
+    """)
+    version_rows = db.session.execute(versions_sql).fetchall()
+    available_versions = [row[0].isoformat() for row in version_rows if row[0] is not None]
+    selected_version = requested_reference_version if requested_reference_version in available_versions else latest_version.isoformat()
+
+    rows_sql = text("""
+        SELECT
+            rank AS curved_rank_group,
+            CAST(ROUND(min_best_metric_seconds) AS INTEGER) AS min_seconds,
+            CAST(ROUND(max_best_metric_seconds) AS INTEGER) AS max_seconds,
+            source_rows AS actual_group_cnt,
+            CASE
+                WHEN rank = 100 THEN 100.0
+                ELSE rank + 0.5
+            END AS score_upper,
+            CASE
+                WHEN rank = 0 THEN 0.0
+                ELSE rank - 0.5
+            END AS score_lower,
+            snapshot_date
+        FROM curve_rank_range_summary
+        WHERE period_type = 'ALL'
+          AND metric_type = :rank_type
+          AND snapshot_date = CAST(:reference_version AS DATE)
+        ORDER BY rank DESC
+    """)
+    result = db.session.execute(rows_sql, {
+        'rank_type': rank_type,
+        'reference_version': selected_version,
+    })
+
+    rows = []
+    for row in result.fetchall():
+        record = dict(row._mapping)
+        min_seconds = record.get('min_seconds')
+        max_seconds = record.get('max_seconds')
+        snapshot_date = record.get('snapshot_date')
+        rows.append({
+            'curved_rank_group': record.get('curved_rank_group'),
+            'curve_rank_reference_version': snapshot_date.isoformat() if snapshot_date is not None else selected_version,
+            'min_seconds': min_seconds,
+            'max_seconds': max_seconds,
+            'min_time': _seconds_to_time_label(min_seconds),
+            'max_time': _seconds_to_time_label(max_seconds),
+            'score_lower': record.get('score_lower'),
+            'score_upper': record.get('score_upper'),
+            'actual_group_cnt': record.get('actual_group_cnt'),
+        })
+
+    return jsonify({
+        'rank_type': rank_type,
+        'curve_rank_reference_version': selected_version,
+        'latest_curve_rank_reference_version': latest_version.isoformat(),
+        'available_curve_rank_reference_versions': available_versions,
+        'rows': rows
+    }), 200
+
+@app.route('/api/athlete_runs', methods=['GET'])
+def get_athlete_runs():
+    athlete_code = request.args.get('athlete_code', type=str)
+    if not athlete_code:
+        return jsonify({'error': 'athlete_code is required'}), 400
+
+    sql = text("""
+        SELECT
+            ep.event_code,
+            e.event_name AS event_name,
+            e.display_name AS event_display,
+            ep.event_date,
+            ep.position,
+            ep.name,
+            ep.male_position,
+            ep.male_count,
+            ep.age_group,
+            ep.age_grade,
+            ep.time,
+            ep.club,
+            ep.comment,
+            ep.athlete_code,
+            ep.event_eligible_appearances,
+            ep.time_ratio,
+            ep.adj_time_seconds,
+            ep.adj_time_ratio,
+            ep.event_code_count,
+            ep.tourist_flag,
+            ep.last_event_code_count,
+            ep.total_runs,
+            ep.age_ratio_male,
+            ep.age_ratio_sex,
+            ep.super_tourist,
+            ep.local_time_ratio,
+            ep.adj2_time_seconds,
+            ep.adj2_time_ratio,
+            ep.distinct_courses_long,
+            ep.last_event_code_count_long,
+            ep.total_runs_long,
+            ep.current_age_estimate,
+            ep.regular,
+            ep.returner,
+            ep.super_returner,
+            a.name AS athlete_name,
+            a.club AS athlete_club,
+            a.min_dob,
+            a.last_age_estimate,
+            a.max_dob,
+            a.last_updated,
+            a.current_age_estimate AS athlete_current_age_estimate,            
+            a.sex,
+            a.total_runs,
+			p.coeff,
+			p.coeff_event,
+			p.event_number,
+			p.last_position,
+            ep.best_curve_ranking_current,
+		    ep.best_curve_ranking_historic,
+		    ep.best_curve_ranking_current_type,
+            ep.event_rank_b,
+            ep.event_rank_e,
+            ep.event_rank_es,
+            ep.event_rank_ae,
+            ep.event_rank_aes
+        FROM eventpositions ep
+        JOIN athletes a ON a.athlete_code = ep.athlete_code
+        LEFT JOIN events e ON e.event_code = ep.event_code
+		LEFT JOIN parkrun_events p ON ep.event_code=p.event_code and ep.event_date=p.event_date
+        WHERE ep.athlete_code = :athlete_code
+        ORDER BY substr(ep.event_date, 7, 4) || '-' || substr(ep.event_date, 4, 2) || '-' || substr(ep.event_date, 1, 2), ep.position
+    """)
+
+    result = db.session.execute(sql, {'athlete_code': athlete_code})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
+@app.route('/api/athletes', methods=['GET'])
+def get_athletes():
+    sql = text("SELECT athlete_code, name FROM athletes")
+    result = db.session.execute(sql)
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
+@app.route('/api/athletes/search', methods=['GET'])
+def search_athletes():
+    q = request.args.get('q', default='', type=str).strip()
+    limit = request.args.get('limit', default=25, type=int)
+    if not q:
+        return jsonify([]), 200
+
+    # Prefer prefix match on athlete_code and substring (case-insensitive) on name
+    pattern_code = f'{q}%'
+    pattern_name = f'%{q.lower()}%'
+
+    sql = text("""
+        SELECT athlete_code, name, club, current_age_estimate
+        FROM athletes
+        WHERE athlete_code LIKE :pattern_code
+           OR LOWER(name) LIKE :pattern_name
+        ORDER BY CASE WHEN LOWER(name) LIKE :pattern_name THEN 0 ELSE 1 END, name
+        LIMIT :limit
+    """)
+    result = db.session.execute(sql, {'pattern_code': pattern_code, 'pattern_name': pattern_name, 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
+@app.route('/api/clubs/search', methods=['GET'])
+def search_clubs():
+    q = request.args.get('q', default='', type=str).strip().lower()
+    limit = request.args.get('limit', default=25, type=int)
+    limit = max(1, min(limit, 200))
+
+    sql = text("""
+        SELECT
+            club,
+            COUNT(*)::int AS athlete_count
+        FROM athletes
+        WHERE club IS NOT NULL
+          AND btrim(club) <> ''
+          AND (:q = '' OR LOWER(club) LIKE :pattern)
+        GROUP BY club
+        ORDER BY club
+        LIMIT :limit
+    """)
+    result = db.session.execute(sql, {'q': q, 'pattern': f'%{q}%', 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
 
 
 @app.route('/api/clubs/members', methods=['GET'])
@@ -3530,7 +2296,7 @@ def get_club_members():
                 best_curve_ranking_current_type,
                 total_runs_all_clubs
             FROM mv_club_members_cache
-            WHERE club_key = regexp_replace(LOWER(BTRIM(:club)), '\s+ac$', '')
+            WHERE club_key = regexp_replace(LOWER(BTRIM(:club)), '\\s+ac$', '')
             ORDER BY club_runs_total DESC, name
             LIMIT :limit
         """)
@@ -3538,7 +2304,7 @@ def get_club_members():
         sql = text("""
             WITH club_runs AS (
                 SELECT
-                    regexp_replace(LOWER(BTRIM(m.club)), '\s+ac$', '') AS club_key,
+                    regexp_replace(LOWER(BTRIM(m.club)), '\\s+ac$', '') AS club_key,
                     m.athlete_code,
                     COUNT(*)::int AS club_runs_total,
                     COUNT(*) FILTER (
@@ -3555,12 +2321,12 @@ def get_club_members():
                     MIN(m.age_sex_event_adj_time_seconds) AS best_age_sex_event_adj_time_seconds,
                     (ARRAY_AGG(m.age_sex_event_adj_time ORDER BY m.age_sex_event_adj_time_seconds ASC NULLS LAST, m.event_dt DESC NULLS LAST))[1] AS best_age_sex_event_adj_time
                 FROM mv_extend_runs m
-                WHERE regexp_replace(LOWER(BTRIM(m.club)), '\s+ac$', '') = regexp_replace(LOWER(BTRIM(:club)), '\s+ac$', '')
+                WHERE regexp_replace(LOWER(BTRIM(m.club)), '\\s+ac$', '') = regexp_replace(LOWER(BTRIM(:club)), '\\s+ac$', '')
                   AND m.club IS NOT NULL
                   AND BTRIM(m.club) <> ''
                   AND m.athlete_code IS NOT NULL
                   AND BTRIM(m.athlete_code) <> ''
-                GROUP BY regexp_replace(LOWER(BTRIM(m.club)), '\s+ac$', ''), m.athlete_code
+                GROUP BY regexp_replace(LOWER(BTRIM(m.club)), '\\s+ac$', ''), m.athlete_code
             ),
             latest_age AS (
                 SELECT DISTINCT ON (m.athlete_code)
@@ -3617,38 +2383,61 @@ def get_club_members():
                 WHERE current_best_rank_aes IS NOT NULL
             ),
             current_rank_best AS (
-                SELECT
+                SELECT DISTINCT ON (athlete_code)
                     athlete_code,
-                    metric_type,
-                    rank,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY athlete_code
-                        ORDER BY rank DESC, metric_order ASC
-                    ) AS rn
+                    rank::int AS best_curve_ranking_current,
+                    metric_type AS best_curve_ranking_current_type
                 FROM latest_1y_rank_candidates
+                ORDER BY athlete_code, rank ASC, metric_order ASC
             ),
             historic_rank AS (
                 SELECT
                     m.athlete_code,
-                    GREATEST(
-                        COALESCE(MAX(m.current_best_rank_b)::numeric, 0),
-                        COALESCE(MAX(m.current_best_rank_e)::numeric, 0),
-                        COALESCE(MAX(m.current_best_rank_ae)::numeric, 0),
-                        COALESCE(MAX(m.current_best_rank_es)::numeric, 0),
-                        COALESCE(MAX(m.current_best_rank_aes)::numeric, 0)
-                    ) AS best_curve_ranking_historic
-                FROM mv_extend_runs m
-                JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                WHERE m.athlete_code IS NOT NULL
-                  AND BTRIM(m.athlete_code) <> ''
-                  AND (
-                      m.current_best_rank_b IS NOT NULL
-                      OR m.current_best_rank_e IS NOT NULL
-                      OR m.current_best_rank_ae IS NOT NULL
-                      OR m.current_best_rank_es IS NOT NULL
-                      OR m.current_best_rank_aes IS NOT NULL
-                  )
+                    MIN(metric_rank)::int AS best_curve_ranking_historic
+                FROM (
+                    SELECT m.athlete_code, m.current_best_rank_b::numeric AS metric_rank
+                    FROM mv_extend_runs m
+                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
+                    WHERE m.current_best_rank_b IS NOT NULL
+
+                    UNION ALL
+
+                    SELECT m.athlete_code, m.current_best_rank_e::numeric AS metric_rank
+                    FROM mv_extend_runs m
+                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
+                    WHERE m.current_best_rank_e IS NOT NULL
+
+                    UNION ALL
+
+                    SELECT m.athlete_code, m.current_best_rank_ae::numeric AS metric_rank
+                    FROM mv_extend_runs m
+                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
+                    WHERE m.current_best_rank_ae IS NOT NULL
+
+                    UNION ALL
+
+                    SELECT m.athlete_code, m.current_best_rank_es::numeric AS metric_rank
+                    FROM mv_extend_runs m
+                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
+                    WHERE m.current_best_rank_es IS NOT NULL
+
+                    UNION ALL
+
+                    SELECT m.athlete_code, m.current_best_rank_aes::numeric AS metric_rank
+                    FROM mv_extend_runs m
+                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
+                    WHERE m.current_best_rank_aes IS NOT NULL
+                ) m
                 GROUP BY m.athlete_code
+            ),
+            total_runs AS (
+                SELECT
+                    athlete_code,
+                    COUNT(*)::int AS total_runs_all_clubs
+                FROM mv_extend_runs
+                WHERE athlete_code IS NOT NULL
+                  AND BTRIM(athlete_code) <> ''
+                GROUP BY athlete_code
             )
             SELECT
                 cr.athlete_code,
@@ -3668,16 +2457,20 @@ def get_club_members():
                 cr.best_age_event_adj_time_seconds,
                 cr.best_age_sex_event_adj_time,
                 cr.best_age_sex_event_adj_time_seconds,
-                CASE WHEN cr.club_runs_last_year > 0 THEN crb.rank ELSE NULL::numeric END AS best_curve_ranking_current,
-                COALESCE(hr.best_curve_ranking_historic, CASE WHEN cr.club_runs_last_year > 0 THEN crb.rank ELSE NULL::numeric END) AS best_curve_ranking_historic,
-                CASE WHEN cr.club_runs_last_year > 0 THEN crb.metric_type ELSE NULL::text END AS best_curve_ranking_current_type,
-                COALESCE(a.total_runs, 0) AS total_runs_all_clubs
+                CASE
+                    WHEN COALESCE(cr.club_runs_last_year, 0) > 0 THEN crb.best_curve_ranking_current
+                    ELSE NULL
+                END AS best_curve_ranking_current,
+                COALESCE(hr.best_curve_ranking_historic, crb.best_curve_ranking_current) AS best_curve_ranking_historic,
+                crb.best_curve_ranking_current_type,
+                COALESCE(tr.total_runs_all_clubs, 0) AS total_runs_all_clubs
             FROM club_runs cr
-            LEFT JOIN athletes a ON a.athlete_code = cr.athlete_code
+            LEFT JOIN athletes a ON CAST(a.athlete_code AS TEXT) = cr.athlete_code
             LEFT JOIN latest_age la ON la.athlete_code = cr.athlete_code
-            LEFT JOIN current_rank_best crb ON crb.athlete_code = cr.athlete_code AND crb.rn = 1
+            LEFT JOIN current_rank_best crb ON crb.athlete_code = cr.athlete_code
             LEFT JOIN historic_rank hr ON hr.athlete_code = cr.athlete_code
-            ORDER BY cr.club_runs_total DESC, name
+            LEFT JOIN total_runs tr ON tr.athlete_code = cr.athlete_code
+            ORDER BY cr.club_runs_total DESC, COALESCE(a.name, cr.athlete_code)
             LIMIT :limit
         """)
 
@@ -3685,31 +2478,841 @@ def get_club_members():
     rows = [dict(row) for row in result.fetchall()]
     return jsonify(rows), 200
 
-if __name__ == '__main__':
-#    for rule in app.url_map.iter_rules():
-#        print(f"{rule.endpoint}: {rule}")
-    conn, cursor, render_db_conn, *_ = connections()
-    try:
-        conn.create_function("time_to_seconds", 1, timeToSeconds)
-        cursor.execute("SELECT time_to_seconds('1:23:45')")
-        print(cursor.fetchone())
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        if render_db_conn:
-            try:
-                render_db_conn.close()
-            except Exception:
-                pass
 
-    httpd = make_server(
-        '127.0.0.1',
-        5050,
-        app,
-        server_class=_ThreadingWSGIServer,
-        handler_class=_QuietWSGIRequestHandler,
-    )
-    print('Serving backendAPI on http://127.0.0.1:5050')
-    httpd.serve_forever()
+@app.route('/api/clubs/course-summary', methods=['GET'])
+def get_club_course_summary():
+    club = (request.args.get('club') or '').strip()
+    limit = request.args.get('limit', default=1000, type=int)
+    limit = max(1, min(limit, 5000))
+
+    if not club:
+        return jsonify({'error': 'Missing required parameter: club'}), 400
+
+    sql = text("""
+        WITH params AS (
+            SELECT
+                BTRIM(:club) AS target_club,
+                MAX(CAST(formatted_date AS date)) AS anchor_date
+            FROM eventpositions
+            WHERE formatted_date IS NOT NULL
+        ),
+        base AS (
+            SELECT
+                ep.event_code,
+                COALESCE(NULLIF(ev.display_name, ''), ev.event_name) AS event_name,
+                CAST(ep.formatted_date AS date) AS event_day,
+                ep.athlete_code
+            FROM eventpositions ep
+            JOIN events ev
+              ON ev.event_code = ep.event_code
+            CROSS JOIN params p
+                        WHERE ep.formatted_date IS NOT NULL
+              AND LOWER(BTRIM(COALESCE(ep.club, ''))) = LOWER(p.target_club)
+        ),
+        all_history AS (
+            SELECT
+                b.event_code,
+                b.event_name,
+                COUNT(DISTINCT b.event_day)::int AS events_held_all_history,
+                COUNT(*)::int AS club_runs_all_history,
+                COUNT(DISTINCT b.athlete_code)::int AS athletes_all_history
+            FROM base b
+            GROUP BY b.event_code, b.event_name
+        ),
+        last_year AS (
+            SELECT
+                b.event_code,
+                b.event_name,
+                COUNT(DISTINCT b.event_day)::int AS events_held_last_year,
+                COUNT(*)::int AS club_runs_last_year,
+                COUNT(DISTINCT b.athlete_code)::int AS athletes_last_year
+            FROM base b
+            CROSS JOIN params p
+            WHERE p.anchor_date IS NOT NULL
+              AND b.event_day >= (p.anchor_date - INTERVAL '1 year')
+            GROUP BY b.event_code, b.event_name
+        )
+        SELECT
+            a.event_code,
+            a.event_name,
+            a.events_held_all_history,
+            a.club_runs_all_history,
+            a.athletes_all_history,
+            RANK() OVER (
+                ORDER BY
+                    a.club_runs_all_history DESC,
+                    a.events_held_all_history DESC,
+                    a.athletes_all_history DESC,
+                    a.event_name ASC
+            )::int AS rank_all_history,
+            COALESCE(l.events_held_last_year, 0)::int AS events_held_last_year,
+            COALESCE(l.club_runs_last_year, 0)::int AS club_runs_last_year,
+            COALESCE(l.athletes_last_year, 0)::int AS athletes_last_year,
+            RANK() OVER (
+                ORDER BY
+                    COALESCE(l.club_runs_last_year, 0) DESC,
+                    COALESCE(l.events_held_last_year, 0) DESC,
+                    COALESCE(l.athletes_last_year, 0) DESC,
+                    a.event_name ASC
+            )::int AS rank_last_year
+        FROM all_history a
+        LEFT JOIN last_year l
+          ON l.event_code = a.event_code
+        ORDER BY
+            a.club_runs_all_history DESC,
+            a.events_held_all_history DESC,
+            a.event_name ASC
+        LIMIT :limit
+    """)
+
+    result = db.session.execute(sql, {'club': club, 'limit': limit})
+    rows = [dict(row) for row in result.fetchall()]
+    return jsonify(rows), 200
+
+@app.route('/api/athlete_best_summary', methods=['GET'])
+def get_athlete_best_summary():
+        """
+        API endpoint to get best-run ranks (all-time and last-year) plus total/recent runs
+        for a single athlete.
+        Query param:
+            - athlete_code (required)
+        """
+        from app import db  # Import db here to avoid circular import
+        try:
+                athlete_code = (request.args.get('athlete_code') or '').strip()
+                if not athlete_code:
+                        return jsonify({
+                                'error': 'Missing required parameter',
+                                'required': ['athlete_code']
+                        }), 400
+
+                history_table_exists = bool(
+                    db.session.execute(text("SELECT to_regclass('public.curve_rank_mapping_history') IS NOT NULL")).scalar()
+                )
+                summary_table_exists = bool(
+                    db.session.execute(text("SELECT to_regclass('public.curve_rank_range_summary') IS NOT NULL")).scalar()
+                )
+
+                if history_table_exists:
+                    latest_snapshot_sql = """
+                            SELECT MAX(snapshot_date) AS snapshot_date
+                            FROM curve_rank_mapping_history
+                            WHERE period_type = '1Y'
+                    """
+                    mapping_lateral_sql = """
+                                SELECT c.rank, c.best_metric_seconds AS mapped_seconds
+                                FROM curve_rank_mapping_history c
+                                JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+                                WHERE c.period_type = '1Y'
+                                    AND c.metric_type = b.metric_type
+                                    AND c.rank IS NOT NULL
+                                ORDER BY ABS(c.best_metric_seconds - b.metric_seconds) ASC, c.best_metric_seconds ASC
+                                LIMIT 1
+                    """
+                elif summary_table_exists:
+                    latest_snapshot_sql = """
+                            SELECT MAX(snapshot_date) AS snapshot_date
+                            FROM curve_rank_range_summary
+                            WHERE period_type = '1Y'
+                    """
+                    mapping_lateral_sql = """
+                                SELECT
+                                    c.rank,
+                                    COALESCE(
+                                        (c.min_best_metric_seconds + c.max_best_metric_seconds) / 2.0,
+                                        c.min_best_metric_seconds,
+                                        c.max_best_metric_seconds
+                                    ) AS mapped_seconds
+                                FROM curve_rank_range_summary c
+                                JOIN latest_1y_snapshot ls ON ls.snapshot_date = c.snapshot_date
+                                WHERE c.period_type = '1Y'
+                                    AND c.metric_type = b.metric_type
+                                    AND c.rank IS NOT NULL
+                                ORDER BY
+                                    CASE
+                                    WHEN b.metric_seconds IS NULL THEN 1000000000.0
+                                    WHEN c.min_best_metric_seconds IS NOT NULL
+                                         AND b.metric_seconds < c.min_best_metric_seconds
+                                        THEN c.min_best_metric_seconds - b.metric_seconds
+                                    WHEN c.max_best_metric_seconds IS NOT NULL
+                                         AND b.metric_seconds > c.max_best_metric_seconds
+                                        THEN b.metric_seconds - c.max_best_metric_seconds
+                                    ELSE 0.0
+                                    END ASC,
+                                    c.rank DESC
+                                LIMIT 1
+                    """
+                else:
+                    latest_snapshot_sql = "SELECT NULL::date AS snapshot_date"
+                    mapping_lateral_sql = "SELECT NULL::numeric AS rank, NULL::double precision AS mapped_seconds WHERE FALSE"
+
+                sql = text(f"""
+                        WITH
+                        params AS (
+                            SELECT CAST(:athlete_code AS text) AS athlete_code
+                        ),
+                        athlete_curve_source AS (
+                            SELECT
+                                ep.athlete_code::text AS athlete_code,
+                                ep.event_date::text AS event_date,
+                                to_date(ep.event_date, 'DD/MM/YYYY') AS event_dt,
+                                ep.time::text AS time,
+                                ep.event_rank_b,
+                                ep.event_rank_e,
+                                ep.event_rank_es,
+                                ep.event_rank_ae,
+                                ep.event_rank_aes,
+                                ep.current_best_rank_b,
+                                ep.current_best_rank_e,
+                                ep.current_best_rank_es,
+                                ep.current_best_rank_ae,
+                                ep.current_best_rank_aes,
+                                ep.age_ratio_male,
+                                ep.age_ratio_sex,
+                                p.coeff,
+                                p.coeff_event,
+                                CASE
+                                    WHEN ep.time IS NULL OR btrim(ep.time) = '' THEN NULL
+                                    WHEN length(ep.time) - length(replace(ep.time, ':', '')) = 2 THEN
+                                        CAST(substring(ep.time, 1, strpos(ep.time, ':') - 1) AS INTEGER) * 3600 +
+                                        CAST(substring(ep.time, strpos(ep.time, ':') + 1, strpos(substring(ep.time, strpos(ep.time, ':') + 1), ':') - 1) AS INTEGER) * 60 +
+                                        CAST(substring(ep.time, length(ep.time) - 1, 2) AS INTEGER)
+                                    WHEN strpos(ep.time, ':') > 0 THEN
+                                        CAST(substring(ep.time, 1, strpos(ep.time, ':') - 1) AS INTEGER) * 60 +
+                                        CAST(substring(ep.time, strpos(ep.time, ':') + 1) AS INTEGER)
+                                    ELSE NULL
+                                END AS time_seconds
+                            FROM eventpositions ep
+                            LEFT JOIN parkrun_events p ON ep.event_code = p.event_code AND ep.event_date = p.event_date
+                            JOIN params prm ON ep.athlete_code::text = prm.athlete_code
+                        ),
+                        athlete_curve_rows AS (
+                            SELECT
+                                athlete_code,
+                                event_date,
+                                event_dt,
+                                time,
+                                event_rank_b,
+                                event_rank_e,
+                                event_rank_es,
+                                event_rank_ae,
+                                event_rank_aes,
+                                current_best_rank_b,
+                                current_best_rank_e,
+                                current_best_rank_es,
+                                current_best_rank_ae,
+                                current_best_rank_aes,
+                                {get_adjustment_fields_sql()}
+                            FROM athlete_curve_source
+                            WHERE time_seconds IS NOT NULL
+                        ),
+                        athlete_curve_rows_1y AS (
+                            SELECT *
+                            FROM athlete_curve_rows
+                            WHERE event_dt >= (CURRENT_DATE - INTERVAL '1 year')::date
+                        ),
+                        total_runs_ranked AS (
+                            SELECT
+                                a.athlete_code::text AS athlete_code,
+                                COALESCE(a.total_runs, 0) AS total_runs,
+                                COALESCE(a.recent_runs, 0) AS recent_runs
+                            FROM athletes a
+                        ),
+                        best_metric_candidates AS (
+                            SELECT athlete_code, 'B'::text AS metric_type, MIN(time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'E'::text AS metric_type, MIN(event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'AE'::text AS metric_type, MIN(age_event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'ES'::text AS metric_type, MIN(sex_event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            GROUP BY athlete_code
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'AES'::text AS metric_type, MIN(age_sex_event_adj_time_seconds)::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            GROUP BY athlete_code
+                        ),
+                        latest_1y_snapshot AS (
+                            {latest_snapshot_sql}
+                        ),
+                        est_rank_candidates AS (
+                            SELECT
+                                b.athlete_code,
+                                b.metric_type,
+                                b.metric_seconds,
+                                cm.rank::numeric AS rank,
+                                CASE b.metric_type
+                                    WHEN 'B' THEN 1
+                                    WHEN 'E' THEN 2
+                                    WHEN 'AE' THEN 3
+                                    WHEN 'ES' THEN 4
+                                    WHEN 'AES' THEN 5
+                                    ELSE 99
+                                END AS metric_order
+                            FROM best_metric_candidates b
+                            LEFT JOIN LATERAL (
+                                                                {mapping_lateral_sql}
+                            ) cm ON TRUE
+                        ),
+                        est_rank_best AS (
+                            SELECT
+                                athlete_code,
+                                metric_type,
+                                metric_seconds,
+                                rank,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY athlete_code
+                                    ORDER BY rank DESC NULLS LAST, metric_order ASC
+                                ) AS rn
+                            FROM est_rank_candidates
+                            WHERE rank IS NOT NULL
+                        ),
+                        best_1y_metric_rows AS (
+                            SELECT athlete_code, 'best_1y'::text AS best_type, 'B'::text AS metric_type, event_date, event_dt, event_rank_b AS carried_rank, time::text AS time, time_seconds::double precision AS sort_seconds, time_seconds::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            WHERE time_seconds IS NOT NULL
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'event_1y'::text AS best_type, 'E'::text AS metric_type, event_date, event_dt, event_rank_e AS carried_rank, event_adj_time::text AS time, event_adj_time_seconds::double precision AS sort_seconds, event_adj_time_seconds::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            WHERE event_adj_time_seconds IS NOT NULL
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'age_event_1y'::text AS best_type, 'AE'::text AS metric_type, event_date, event_dt, event_rank_ae AS carried_rank, age_event_adj_time::text AS time, age_event_adj_time_seconds::double precision AS sort_seconds, age_event_adj_time_seconds::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            WHERE age_event_adj_time_seconds IS NOT NULL
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'sex_event_1y'::text AS best_type, 'ES'::text AS metric_type, event_date, event_dt, event_rank_es AS carried_rank, sex_event_adj_time::text AS time, sex_event_adj_time_seconds::double precision AS sort_seconds, sex_event_adj_time_seconds::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            WHERE sex_event_adj_time_seconds IS NOT NULL
+
+                            UNION ALL
+
+                            SELECT athlete_code, 'age_sex_event_1y'::text AS best_type, 'AES'::text AS metric_type, event_date, event_dt, event_rank_aes AS carried_rank, age_sex_event_adj_time::text AS time, age_sex_event_adj_time_seconds::double precision AS sort_seconds, age_sex_event_adj_time_seconds::double precision AS metric_seconds
+                            FROM athlete_curve_rows_1y
+                            WHERE age_sex_event_adj_time_seconds IS NOT NULL
+                        ),
+                        picked_1y_metric_rows AS (
+                            SELECT
+                                athlete_code,
+                                best_type,
+                                metric_type,
+                                event_date,
+                                event_dt,
+                                carried_rank,
+                                time,
+                                sort_seconds,
+                                metric_seconds,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY athlete_code, best_type
+                                    ORDER BY metric_seconds ASC NULLS LAST, event_dt ASC NULLS LAST, event_date ASC NULLS LAST
+                                ) AS rn
+                            FROM best_1y_metric_rows
+                        ),
+                        resolved_1y_metric_rows AS (
+                            SELECT
+                                p.athlete_code,
+                                p.best_type,
+                                p.event_date,
+                                                                p.carried_rank AS rank,
+                                p.time,
+                                p.sort_seconds,
+                                p.event_dt
+                            FROM picked_1y_metric_rows p
+                            WHERE p.rn = 1
+                                                            AND p.carried_rank IS NOT NULL
+                        ),
+                        stacked AS (
+                                                        SELECT athlete_code, 'best_all_time'::text AS best_type, event_date, current_best_rank_b AS rank, time::text AS time, time_seconds AS sort_seconds, event_dt
+                            FROM athlete_curve_rows
+                            WHERE current_best_rank_b IS NOT NULL
+
+                            UNION ALL
+                                                        SELECT athlete_code, 'event_all_time'::text AS best_type, event_date, current_best_rank_e AS rank, event_adj_time::text AS time, event_adj_time_seconds AS sort_seconds, event_dt
+                            FROM athlete_curve_rows
+                            WHERE current_best_rank_e IS NOT NULL
+
+                            UNION ALL
+                                                        SELECT athlete_code, 'age_event_all_time'::text AS best_type, event_date, current_best_rank_ae AS rank, age_event_adj_time::text AS time, age_event_adj_time_seconds AS sort_seconds, event_dt
+                            FROM athlete_curve_rows
+                            WHERE current_best_rank_ae IS NOT NULL
+
+                            UNION ALL
+                                                        SELECT athlete_code, 'sex_event_all_time'::text AS best_type, event_date, current_best_rank_es AS rank, sex_event_adj_time::text AS time, sex_event_adj_time_seconds AS sort_seconds, event_dt
+                            FROM athlete_curve_rows
+                            WHERE current_best_rank_es IS NOT NULL
+
+                            UNION ALL
+                                                        SELECT athlete_code, 'age_sex_event_all_time'::text AS best_type, event_date, current_best_rank_aes AS rank, age_sex_event_adj_time::text AS time, age_sex_event_adj_time_seconds AS sort_seconds, event_dt
+                            FROM athlete_curve_rows
+                            WHERE current_best_rank_aes IS NOT NULL
+
+                            UNION ALL
+                                                        SELECT athlete_code, best_type, event_date, rank, time, sort_seconds, event_dt
+                            FROM resolved_1y_metric_rows
+
+                            UNION ALL
+                                                        SELECT tr.athlete_code, 'total_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.total_runs::text AS time, NULL::numeric AS sort_seconds, CURRENT_DATE::date AS event_dt
+                            FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
+
+                            UNION ALL
+                                                        SELECT tr.athlete_code, 'recent_runs'::text AS best_type, CURRENT_DATE::text AS event_date, 0 AS rank, tr.recent_runs::text AS time, NULL::numeric AS sort_seconds, CURRENT_DATE::date AS event_dt
+                            FROM total_runs_ranked tr JOIN params p ON tr.athlete_code = p.athlete_code
+
+                            UNION ALL
+                                                        SELECT e.athlete_code, 'estimated_rank_1y'::text AS best_type, NULL::text AS event_date, e.rank, e.metric_type::text AS time, e.metric_seconds AS sort_seconds, NULL::date AS event_dt
+                            FROM est_rank_best e
+                            WHERE e.rn = 1
+                        ),
+                        picked AS (
+                            SELECT *,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY athlete_code, best_type
+                                                                             ORDER BY rank DESC NULLS LAST, sort_seconds ASC NULLS LAST, event_dt DESC NULLS LAST, event_date DESC NULLS LAST
+                                   ) AS rn
+                            FROM stacked
+                        )
+                        SELECT
+                            athlete_code,
+                            best_type,
+                            event_date,
+                            rank,
+                            time
+                        FROM picked
+                        WHERE rn = 1
+                        ORDER BY best_type;
+                """)
+
+                result_proxy = db.session.execute(sql, {'athlete_code': athlete_code, 'min_sec': 12 * 60 + 49})
+                column_names = result_proxy.keys()
+                results = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
+
+                db.session.commit()
+                return jsonify(results)
+
+        except Exception as e:
+                try:
+                        db.session.rollback()
+                except Exception:
+                        pass
+                tb = traceback.format_exc()
+                print(f"Database error in get_athlete_best_summary: {e}\n{tb}")
+                return jsonify({
+                        "error": "Failed to fetch data from the database",
+                        "exception": str(e),
+                        "traceback": tb
+                }), 500
+
+@app.route('/api/next_ext_similar', methods=['GET'])
+def get_next_ext_similar():
+        athlete_code = request.args.get('athlete_code', type=str)
+        if not athlete_code:
+                return jsonify({'error': 'athlete_code is required'}), 400
+
+        above_count = request.args.get('above', default=10, type=int)
+        below_count = request.args.get('below', default=10, type=int)
+        adj_type_filter = request.args.get('adj_type', default='AE', type=str)
+        raw_course_code_filter = request.args.get('course_code', default='', type=str)
+        raw_age_group_filter = request.args.get('age_group', default='', type=str)
+
+        above_count = max(0, min(50, above_count if above_count is not None else 10))
+        below_count = max(0, min(50, below_count if below_count is not None else 10))
+
+        adj_type_metric = str(adj_type_filter or 'AE').strip().upper() or 'AE'
+        if adj_type_metric == '*':
+                adj_type_metric = 'B'
+        if adj_type_metric not in {'B', 'E', 'AE', 'ES', 'AES'}:
+                return jsonify({'error': 'adj_type must be one of *, E, AE, ES, AES'}), 400
+
+        course_code_values = []
+        seen_course_codes = set()
+        for raw_value in str(raw_course_code_filter or '').split(','):
+                normalized_value = raw_value.strip()
+                if not normalized_value or normalized_value.upper() == 'ALL' or normalized_value in seen_course_codes:
+                        continue
+                seen_course_codes.add(normalized_value)
+                course_code_values.append(normalized_value)
+        course_codes_csv = ','.join(course_code_values)
+        course_filter_count = len(course_code_values)
+
+        age_group_values = []
+        seen_age_groups = set()
+        for raw_value in str(raw_age_group_filter or '').split(','):
+            normalized_value = raw_value.strip().upper()
+            if not normalized_value or normalized_value == 'ALL' or normalized_value in seen_age_groups:
+                continue
+            seen_age_groups.add(normalized_value)
+            age_group_values.append(normalized_value)
+        age_groups_csv = ','.join(age_group_values)
+        age_group_filter_count = len(age_group_values)
+
+        mv_metric_config = {
+            'B': {
+                'table': 'mv_best_1y_curve',
+                'metric_column': 'time_seconds',
+                'latest_rank_col': 'current_best_rank_b',
+                'suffix': '*'
+            },
+            'E': {
+                'table': 'mv_best_event_1y_curve',
+                'metric_column': 'event_adj_time_seconds',
+                'latest_rank_col': 'current_best_rank_e',
+                'suffix': 'E'
+            },
+            'AE': {
+                'table': 'mv_best_age_event_1y_curve',
+                'metric_column': 'age_event_adj_time_seconds',
+                'latest_rank_col': 'current_best_rank_ae',
+                'suffix': 'AE'
+            },
+            'ES': {
+                'table': 'mv_best_sex_event_1y_curve',
+                'metric_column': 'sex_event_adj_time_seconds',
+                'latest_rank_col': 'current_best_rank_es',
+                'suffix': 'ES'
+            },
+            'AES': {
+                'table': 'mv_best_age_sex_event_1y_curve',
+                'metric_column': 'age_sex_event_adj_time_seconds',
+                'latest_rank_col': 'current_best_rank_aes',
+                'suffix': 'AES'
+            },
+        }
+
+        mv_names = [
+                'mv_best_1y_curve',
+                'mv_best_event_1y_curve',
+                'mv_best_age_event_1y_curve',
+                'mv_best_sex_event_1y_curve',
+                'mv_best_age_sex_event_1y_curve',
+                'mv_latest_curve_ranks',
+                'mv_participant_run_filters'
+        ]
+        mv_exists_sql = text("""
+            SELECT COUNT(*)
+            FROM pg_matviews
+            WHERE schemaname = 'public'
+              AND matviewname = ANY(:mv_names)
+        """)
+        mv_count = db.session.execute(mv_exists_sql, {'mv_names': mv_names}).scalar() or 0
+        if mv_count != len(mv_names):
+                return jsonify({'error': 'Required Next Ext materialized views are not available'}), 503
+
+        config = mv_metric_config[adj_type_metric]
+        metric_column = config['metric_column']
+        latest_rank_col = config['latest_rank_col']
+        rank_suffix = config['suffix']
+        metric_suffix_by_key = {
+            'B': '*',
+            'E': 'E',
+            'AE': 'AE',
+            'ES': 'ES',
+            'AES': 'AES',
+        }
+        metric_rank_columns = [
+            ('B', 'current_best_rank_b'),
+            ('E', 'current_best_rank_e'),
+            ('AE', 'current_best_rank_ae'),
+            ('ES', 'current_best_rank_es'),
+            ('AES', 'current_best_rank_aes'),
+        ]
+
+        sql = text(f"""
+            WITH latest_rank AS (
+                SELECT
+                    m.athlete_code::text AS athlete_code,
+                    m.current_best_rank_b,
+                    m.current_best_rank_e,
+                    m.current_best_rank_ae,
+                    m.current_best_rank_es,
+                    m.current_best_rank_aes
+                FROM mv_latest_curve_ranks m
+            ),
+            selected_row AS (
+                SELECT
+                    mv.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), '') AS club,
+                    mv.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(BTRIM(mv.event_name), ''), mv.event_code::text) AS best_course,
+                    to_date(mv.event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(mv.age_group), '') AS age_group,
+                    NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
+                    '{adj_type_metric}'::text AS rank_metric,
+                    '{rank_suffix}'::text AS rank_suffix,
+                    mv.{metric_column}::numeric AS metric_seconds,
+                    mv.time_seconds::numeric AS actual_time_seconds,
+                    mv.rank::numeric AS best_rank,
+                    COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
+                    latest.current_best_rank_b::numeric AS current_best_rank_b,
+                    latest.current_best_rank_e::numeric AS current_best_rank_e,
+                    latest.current_best_rank_ae::numeric AS current_best_rank_ae,
+                    latest.current_best_rank_es::numeric AS current_best_rank_es,
+                    latest.current_best_rank_aes::numeric AS current_best_rank_aes,
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y,
+                    prf.freq_course_code,
+                    COALESCE(prf.freq_course, '') AS freq_course
+                FROM {config['table']} mv
+                LEFT JOIN latest_rank latest
+                    ON latest.athlete_code = mv.athlete_code::text
+                LEFT JOIN mv_participant_run_filters prf
+                    ON prf.athlete_code::text = mv.athlete_code::text
+                WHERE mv.athlete_code::text = :athlete_code
+                  AND mv.rank IS NOT NULL
+                  AND mv.{metric_column} IS NOT NULL
+                LIMIT 1
+            ),
+            qualified_above AS (
+                SELECT
+                    mv.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), '') AS club,
+                    mv.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(BTRIM(mv.event_name), ''), mv.event_code::text) AS best_course,
+                    to_date(mv.event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(mv.age_group), '') AS age_group,
+                    NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
+                    '{adj_type_metric}'::text AS rank_metric,
+                    '{rank_suffix}'::text AS rank_suffix,
+                    mv.{metric_column}::numeric AS metric_seconds,
+                    mv.time_seconds::numeric AS actual_time_seconds,
+                    mv.rank::numeric AS best_rank,
+                    COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
+                    latest.current_best_rank_b::numeric AS current_best_rank_b,
+                    latest.current_best_rank_e::numeric AS current_best_rank_e,
+                    latest.current_best_rank_ae::numeric AS current_best_rank_ae,
+                    latest.current_best_rank_es::numeric AS current_best_rank_es,
+                    latest.current_best_rank_aes::numeric AS current_best_rank_aes,
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y,
+                    prf.freq_course_code,
+                    COALESCE(prf.freq_course, '') AS freq_course
+                FROM {config['table']} mv
+                CROSS JOIN selected_row sr
+                LEFT JOIN latest_rank latest
+                    ON latest.athlete_code = mv.athlete_code::text
+                LEFT JOIN mv_participant_run_filters prf
+                    ON prf.athlete_code::text = mv.athlete_code::text
+                WHERE mv.rank IS NOT NULL
+                  AND mv.{metric_column} IS NOT NULL
+                  AND COALESCE(prf.total_runs_local_parkruns_1y, 0) >= 5
+                        AND (
+                                :course_filter_count = 0
+                            OR mv.event_code::text = ANY(string_to_array(:course_codes_csv, ','))
+                            OR COALESCE(prf.freq_course_code, '') = ANY(string_to_array(:course_codes_csv, ','))
+                        )
+                        AND (
+                                :age_group_filter_count = 0
+                            OR UPPER(COALESCE(NULLIF(BTRIM(mv.age_group), ''), '')) = ANY(string_to_array(:age_groups_csv, ','))
+                        )
+                  AND (
+                        mv.{metric_column}::numeric < sr.metric_seconds
+                     OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text < sr.athlete_code)
+                  )
+                ORDER BY mv.{metric_column}::numeric DESC, mv.athlete_code::text DESC
+                LIMIT :side_limit
+            ),
+            qualified_below AS (
+                SELECT
+                    mv.athlete_code::text AS athlete_code,
+                    COALESCE(NULLIF(BTRIM(mv.name), ''), mv.athlete_code::text) AS athlete_name,
+                    COALESCE(NULLIF(BTRIM(mv.club), ''), '') AS club,
+                    mv.event_code::text AS best_course_code,
+                    COALESCE(NULLIF(BTRIM(mv.event_name), ''), mv.event_code::text) AS best_course,
+                    to_date(mv.event_date, 'DD/MM/YYYY') AS event_dt,
+                    NULLIF(BTRIM(mv.age_group), '') AS age_group,
+                    NULLIF(BTRIM(mv.age_grade::text), '') AS age_grade,
+                    '{adj_type_metric}'::text AS rank_metric,
+                    '{rank_suffix}'::text AS rank_suffix,
+                    mv.{metric_column}::numeric AS metric_seconds,
+                    mv.time_seconds::numeric AS actual_time_seconds,
+                    mv.rank::numeric AS best_rank,
+                    COALESCE(latest.{latest_rank_col}::numeric, mv.rank::numeric) AS latest_rank,
+                    latest.current_best_rank_b::numeric AS current_best_rank_b,
+                    latest.current_best_rank_e::numeric AS current_best_rank_e,
+                    latest.current_best_rank_ae::numeric AS current_best_rank_ae,
+                    latest.current_best_rank_es::numeric AS current_best_rank_es,
+                    latest.current_best_rank_aes::numeric AS current_best_rank_aes,
+                    COALESCE(prf.total_runs_local_parkruns_1y, 0)::int AS local_runs_1y,
+                    prf.freq_course_code,
+                    COALESCE(prf.freq_course, '') AS freq_course
+                FROM {config['table']} mv
+                CROSS JOIN selected_row sr
+                LEFT JOIN latest_rank latest
+                    ON latest.athlete_code = mv.athlete_code::text
+                LEFT JOIN mv_participant_run_filters prf
+                    ON prf.athlete_code::text = mv.athlete_code::text
+                WHERE mv.rank IS NOT NULL
+                  AND mv.{metric_column} IS NOT NULL
+                  AND COALESCE(prf.total_runs_local_parkruns_1y, 0) >= 5
+                        AND (
+                                :course_filter_count = 0
+                            OR mv.event_code::text = ANY(string_to_array(:course_codes_csv, ','))
+                            OR COALESCE(prf.freq_course_code, '') = ANY(string_to_array(:course_codes_csv, ','))
+                        )
+                        AND (
+                                :age_group_filter_count = 0
+                            OR UPPER(COALESCE(NULLIF(BTRIM(mv.age_group), ''), '')) = ANY(string_to_array(:age_groups_csv, ','))
+                        )
+                  AND (
+                        mv.{metric_column}::numeric > sr.metric_seconds
+                     OR (mv.{metric_column}::numeric = sr.metric_seconds AND mv.athlete_code::text > sr.athlete_code)
+                  )
+                ORDER BY mv.{metric_column}::numeric ASC, mv.athlete_code::text ASC
+                LIMIT :side_limit
+            ),
+            window_rows AS (
+                SELECT * FROM qualified_above
+                UNION ALL
+                SELECT * FROM selected_row
+                UNION ALL
+                SELECT * FROM qualified_below
+            ),
+            ordered_rows AS (
+                SELECT
+                    wr.*,
+                    ROUND(wr.latest_rank)::int AS display_rank,
+                    CONCAT(ROUND(wr.latest_rank)::int::text, wr.rank_suffix) AS rank_display,
+                    ROW_NUMBER() OVER (
+                        ORDER BY wr.metric_seconds ASC,
+                                 wr.athlete_code ASC
+                    ) AS peer_rn
+                FROM window_rows wr
+            ),
+            selected_position AS (
+                SELECT peer_rn AS selected_peer_rn
+                FROM ordered_rows
+                WHERE athlete_code = :athlete_code
+            ),
+            window_counts AS (
+                SELECT
+                    sp.selected_peer_rn,
+                    COUNT(*)::int AS total_rows,
+                    GREATEST(sp.selected_peer_rn - 1, 0)::int AS available_above,
+                    GREATEST(COUNT(*)::int - sp.selected_peer_rn, 0)::int AS available_below
+                FROM ordered_rows orw
+                CROSS JOIN selected_position sp
+                GROUP BY sp.selected_peer_rn
+            ),
+            final_bounds AS (
+                SELECT
+                    wc.selected_peer_rn,
+                    GREATEST(1, wc.selected_peer_rn - (:above_count + GREATEST(:below_count - wc.available_below, 0))) AS start_rn,
+                    LEAST(wc.total_rows, wc.selected_peer_rn + (:below_count + GREATEST(:above_count - wc.available_above, 0))) AS end_rn
+                FROM window_counts wc
+            )
+            SELECT
+                orw.athlete_code,
+                orw.athlete_name,
+                orw.club,
+                orw.age_group,
+                orw.age_grade,
+                TO_CHAR(orw.event_dt, 'DDMonYY') AS event_date,
+                orw.rank_metric,
+                orw.rank_suffix,
+                orw.display_rank AS rank_score,
+                ROUND(orw.latest_rank::numeric, 1) AS exact_rank,
+                orw.rank_display,
+                ROUND(orw.metric_seconds)::int AS best_time_seconds,
+                ROUND(orw.actual_time_seconds)::int AS actual_time_seconds,
+                orw.best_course_code,
+                COALESCE(orw.best_course, '--') AS best_course,
+                orw.local_runs_1y,
+                orw.current_best_rank_b,
+                orw.current_best_rank_e,
+                orw.current_best_rank_ae,
+                orw.current_best_rank_es,
+                orw.current_best_rank_aes,
+                orw.freq_course_code,
+                COALESCE(orw.freq_course, '') AS freq_course,
+                orw.peer_rn,
+                fb.selected_peer_rn,
+                (orw.athlete_code = :athlete_code) AS is_selected
+            FROM ordered_rows orw
+            CROSS JOIN final_bounds fb
+            WHERE orw.peer_rn BETWEEN fb.start_rn AND fb.end_rn
+            ORDER BY orw.peer_rn
+        """)
+
+        try:
+                result_proxy = db.session.execute(sql, {
+                        'athlete_code': athlete_code,
+                        'above_count': above_count,
+                    'below_count': below_count,
+                        'side_limit': above_count + below_count,
+                    'course_codes_csv': course_codes_csv,
+                    'course_filter_count': course_filter_count,
+                    'age_groups_csv': age_groups_csv,
+                    'age_group_filter_count': age_group_filter_count
+                })
+                column_names = result_proxy.keys()
+                rows = [dict(zip(column_names, row)) for row in result_proxy.fetchall()]
+
+                selected_row = next((row for row in rows if row.get('is_selected')), None)
+                selected_preferred_metric = None
+                selected_preferred_exact_rank = None
+                if selected_row:
+                    for metric_key, column_name in metric_rank_columns:
+                        raw_value = selected_row.get(column_name)
+                        if raw_value is None:
+                            continue
+                        try:
+                            numeric_value = float(raw_value)
+                        except (TypeError, ValueError):
+                            continue
+                        if selected_preferred_exact_rank is None or numeric_value > selected_preferred_exact_rank:
+                            selected_preferred_metric = metric_key
+                            selected_preferred_exact_rank = numeric_value
+                selected_preferred_rank_score = round(selected_preferred_exact_rank) if selected_preferred_exact_rank is not None else None
+                selected_preferred_rank_display = None
+                if selected_preferred_rank_score is not None and selected_preferred_metric:
+                    selected_preferred_rank_display = f"{selected_preferred_rank_score}{metric_suffix_by_key[selected_preferred_metric]}"
+
+                db.session.commit()
+                return jsonify({
+                        'selectedAthleteCode': athlete_code,
+                        'selectedRankScore': selected_row.get('rank_score') if selected_row else None,
+                        'selectedRankDisplay': selected_row.get('rank_display') if selected_row else None,
+                    'selectedPreferredAdjType': selected_preferred_metric,
+                    'selectedPreferredRankScore': selected_preferred_rank_score,
+                    'selectedPreferredExactRank': round(selected_preferred_exact_rank, 1) if selected_preferred_exact_rank is not None else None,
+                    'selectedPreferredRankDisplay': selected_preferred_rank_display,
+                    'courseCodeFilter': course_code_values if course_code_values else None,
+                    'ageGroupFilter': age_group_values if age_group_values else None,
+                        'adjTypeFilter': adj_type_metric,
+                        'rows': rows
+                })
+
+        except Exception as e:
+                try:
+                        db.session.rollback()
+                except Exception:
+                        pass
+                tb = traceback.format_exc()
+                print(f"Database error in get_next_ext_similar: {e}\n{tb}")
+                return jsonify({
+                        'error': 'Failed to fetch data from the database',
+                        'exception': str(e),
+                        'traceback': tb
+                }), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
