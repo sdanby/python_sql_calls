@@ -2251,7 +2251,7 @@ def search_clubs():
         LIMIT :limit
     """)
     result = db.session.execute(sql, {'q': q, 'pattern': f'%{q}%', 'limit': limit})
-    rows = [dict(row) for row in result.fetchall()]
+    rows = [dict(row) for row in result.mappings().all()]
     return jsonify(rows), 200
 
 
@@ -2327,124 +2327,13 @@ def get_club_members():
                   AND m.athlete_code IS NOT NULL
                   AND BTRIM(m.athlete_code) <> ''
                 GROUP BY regexp_replace(LOWER(BTRIM(m.club)), '\\s+ac$', ''), m.athlete_code
-            ),
-            latest_age AS (
-                SELECT DISTINCT ON (m.athlete_code)
-                    m.athlete_code,
-                    m.age_group AS latest_age_group
-                FROM mv_extend_runs m
-                JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                WHERE m.athlete_code IS NOT NULL
-                  AND BTRIM(m.athlete_code) <> ''
-                ORDER BY m.athlete_code, m.event_dt DESC NULLS LAST, m.event_code DESC
-            ),
-            latest_1y_row AS (
-                SELECT DISTINCT ON (m.athlete_code)
-                    m.athlete_code,
-                    m.current_best_rank_b,
-                    m.current_best_rank_e,
-                    m.current_best_rank_ae,
-                    m.current_best_rank_es,
-                    m.current_best_rank_aes
-                FROM mv_extend_runs m
-                JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                WHERE m.athlete_code IS NOT NULL
-                  AND BTRIM(m.athlete_code) <> ''
-                  AND m.event_dt >= CURRENT_DATE - INTERVAL '1 year'
-                ORDER BY m.athlete_code, m.event_dt DESC NULLS LAST, m.event_code DESC
-            ),
-            latest_1y_rank_candidates AS (
-                SELECT athlete_code, 'B'::text AS metric_type, current_best_rank_b::numeric AS rank, 1 AS metric_order
-                FROM latest_1y_row
-                WHERE current_best_rank_b IS NOT NULL
-
-                UNION ALL
-
-                SELECT athlete_code, 'E'::text AS metric_type, current_best_rank_e::numeric AS rank, 2 AS metric_order
-                FROM latest_1y_row
-                WHERE current_best_rank_e IS NOT NULL
-
-                UNION ALL
-
-                SELECT athlete_code, 'AE'::text AS metric_type, current_best_rank_ae::numeric AS rank, 3 AS metric_order
-                FROM latest_1y_row
-                WHERE current_best_rank_ae IS NOT NULL
-
-                UNION ALL
-
-                SELECT athlete_code, 'ES'::text AS metric_type, current_best_rank_es::numeric AS rank, 4 AS metric_order
-                FROM latest_1y_row
-                WHERE current_best_rank_es IS NOT NULL
-
-                UNION ALL
-
-                SELECT athlete_code, 'AES'::text AS metric_type, current_best_rank_aes::numeric AS rank, 5 AS metric_order
-                FROM latest_1y_row
-                WHERE current_best_rank_aes IS NOT NULL
-            ),
-            current_rank_best AS (
-                SELECT DISTINCT ON (athlete_code)
-                    athlete_code,
-                    rank::int AS best_curve_ranking_current,
-                    metric_type AS best_curve_ranking_current_type
-                FROM latest_1y_rank_candidates
-                ORDER BY athlete_code, rank ASC, metric_order ASC
-            ),
-            historic_rank AS (
-                SELECT
-                    m.athlete_code,
-                    MIN(metric_rank)::int AS best_curve_ranking_historic
-                FROM (
-                    SELECT m.athlete_code, m.current_best_rank_b::numeric AS metric_rank
-                    FROM mv_extend_runs m
-                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                    WHERE m.current_best_rank_b IS NOT NULL
-
-                    UNION ALL
-
-                    SELECT m.athlete_code, m.current_best_rank_e::numeric AS metric_rank
-                    FROM mv_extend_runs m
-                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                    WHERE m.current_best_rank_e IS NOT NULL
-
-                    UNION ALL
-
-                    SELECT m.athlete_code, m.current_best_rank_ae::numeric AS metric_rank
-                    FROM mv_extend_runs m
-                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                    WHERE m.current_best_rank_ae IS NOT NULL
-
-                    UNION ALL
-
-                    SELECT m.athlete_code, m.current_best_rank_es::numeric AS metric_rank
-                    FROM mv_extend_runs m
-                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                    WHERE m.current_best_rank_es IS NOT NULL
-
-                    UNION ALL
-
-                    SELECT m.athlete_code, m.current_best_rank_aes::numeric AS metric_rank
-                    FROM mv_extend_runs m
-                    JOIN club_runs cr ON cr.athlete_code = m.athlete_code
-                    WHERE m.current_best_rank_aes IS NOT NULL
-                ) m
-                GROUP BY m.athlete_code
-            ),
-            total_runs AS (
-                SELECT
-                    athlete_code,
-                    COUNT(*)::int AS total_runs_all_clubs
-                FROM mv_extend_runs
-                WHERE athlete_code IS NOT NULL
-                  AND BTRIM(athlete_code) <> ''
-                GROUP BY athlete_code
             )
             SELECT
                 cr.athlete_code,
                 COALESCE(a.name, cr.athlete_code) AS name,
                 cr.club_key,
                 a.club AS current_club,
-                la.latest_age_group,
+                NULL::text AS latest_age_group,
                 cr.club_runs_total,
                 cr.club_runs_last_year,
                 cr.first_club_run_date,
@@ -2457,25 +2346,18 @@ def get_club_members():
                 cr.best_age_event_adj_time_seconds,
                 cr.best_age_sex_event_adj_time,
                 cr.best_age_sex_event_adj_time_seconds,
-                CASE
-                    WHEN COALESCE(cr.club_runs_last_year, 0) > 0 THEN crb.best_curve_ranking_current
-                    ELSE NULL
-                END AS best_curve_ranking_current,
-                COALESCE(hr.best_curve_ranking_historic, crb.best_curve_ranking_current) AS best_curve_ranking_historic,
-                crb.best_curve_ranking_current_type,
-                COALESCE(tr.total_runs_all_clubs, 0) AS total_runs_all_clubs
+                NULL::int AS best_curve_ranking_current,
+                NULL::int AS best_curve_ranking_historic,
+                NULL::text AS best_curve_ranking_current_type,
+                NULL::int AS total_runs_all_clubs
             FROM club_runs cr
             LEFT JOIN athletes a ON CAST(a.athlete_code AS TEXT) = cr.athlete_code
-            LEFT JOIN latest_age la ON la.athlete_code = cr.athlete_code
-            LEFT JOIN current_rank_best crb ON crb.athlete_code = cr.athlete_code
-            LEFT JOIN historic_rank hr ON hr.athlete_code = cr.athlete_code
-            LEFT JOIN total_runs tr ON tr.athlete_code = cr.athlete_code
             ORDER BY cr.club_runs_total DESC, COALESCE(a.name, cr.athlete_code)
             LIMIT :limit
         """)
 
     result = db.session.execute(sql, {'club': club, 'limit': limit})
-    rows = [dict(row) for row in result.fetchall()]
+    rows = [dict(row) for row in result.mappings().all()]
     return jsonify(rows), 200
 
 
@@ -2566,7 +2448,7 @@ def get_club_course_summary():
     """)
 
     result = db.session.execute(sql, {'club': club, 'limit': limit})
-    rows = [dict(row) for row in result.fetchall()]
+    rows = [dict(row) for row in result.mappings().all()]
     return jsonify(rows), 200
 
 @app.route('/api/athlete_best_summary', methods=['GET'])
