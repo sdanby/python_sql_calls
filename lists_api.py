@@ -1,9 +1,16 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 import traceback
 from sqlalchemy import text
 
 # 1. Create a new Blueprint
 lists_bp = Blueprint('lists_api', __name__)
+
+
+def _get_db():
+    db = current_app.extensions.get('sqlalchemy')
+    if db is None:
+        raise RuntimeError('SQLAlchemy extension is not registered on the active Flask app.')
+    return db
 
 def get_adjustment_fields_sql():
     return """
@@ -36,8 +43,7 @@ def get_fastest_runs_by_athlete():
     """
     API endpoint to get the single fastest run for every athlete.
     """
-    from app import db  # Import db here to avoid circular import
-    from flask import request
+    db = _get_db()
     try:
         # Representative-row whitelist mapped to pre-built materialized views.
         view_sort_to_view_all_time = {
@@ -291,7 +297,7 @@ def get_fastest_runs_by_athlete():
 @lists_bp.route('/api/lists/event_summary', methods=['GET'])
 def get_event_summary_by_code():
     """Return event summary leaderboard for a specific event_code."""
-    from app import db
+    db = _get_db()
 
     def relation_exists(relation_name):
         exists_sql = text("SELECT to_regclass(:relation_name) IS NOT NULL")
