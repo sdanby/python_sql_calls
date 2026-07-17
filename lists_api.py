@@ -7,10 +7,15 @@ lists_bp = Blueprint('lists_api', __name__)
 
 
 def _get_db():
-    db = current_app.extensions.get('sqlalchemy')
-    if db is None:
+    extension = current_app.extensions.get('sqlalchemy')
+    if extension is None:
         raise RuntimeError('SQLAlchemy extension is not registered on the active Flask app.')
-    return db
+    if hasattr(extension, 'session'):
+        return extension
+    db = getattr(extension, 'db', None)
+    if db is not None and hasattr(db, 'session'):
+        return db
+    raise RuntimeError('SQLAlchemy extension does not expose a session on the active Flask app.')
 
 def get_adjustment_fields_sql():
     return """
