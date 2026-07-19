@@ -2133,6 +2133,14 @@ def get_athlete_runs():
         return jsonify({'error': 'athlete_code is required'}), 400
 
     sql = text("""
+        WITH local_volunteer_counts AS (
+            SELECT
+                v.athlete_code,
+                COUNT(*) AS local_volunteer_count
+            FROM volunteers v
+            WHERE v.athlete_code = :athlete_code
+            GROUP BY v.athlete_code
+        )
         SELECT
             ep.event_code,
             e.event_name AS event_name,
@@ -2178,6 +2186,8 @@ def get_athlete_runs():
             a.current_age_estimate AS athlete_current_age_estimate,            
             a.sex,
             a.total_runs,
+            a.total_vols,
+            lvc.local_volunteer_count,
 			p.coeff,
 			p.coeff_event,
 			p.event_number,
@@ -2193,6 +2203,7 @@ def get_athlete_runs():
         FROM eventpositions ep
         JOIN athletes a ON a.athlete_code = ep.athlete_code
         LEFT JOIN events e ON e.event_code = ep.event_code
+		LEFT JOIN local_volunteer_counts lvc ON lvc.athlete_code = ep.athlete_code
 		LEFT JOIN parkrun_events p ON ep.event_code=p.event_code and ep.event_date=p.event_date
         WHERE ep.athlete_code = :athlete_code
         ORDER BY substr(ep.event_date, 7, 4) || '-' || substr(ep.event_date, 4, 2) || '-' || substr(ep.event_date, 1, 2), ep.position
