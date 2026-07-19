@@ -186,6 +186,7 @@ class AuthUser(db.Model):
     default_course_code = db.Column(db.String(32), nullable=True, index=True)
     default_course_name = db.Column(db.String(255), nullable=True)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    last_read_chat_message_id = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime, nullable=True)
 
@@ -271,6 +272,9 @@ with app.app_context():
         db.session.commit()
     if 'default_course_name' not in auth_user_columns:
         db.session.execute(text("ALTER TABLE auth_users ADD COLUMN default_course_name VARCHAR(255)"))
+        db.session.commit()
+    if 'last_read_chat_message_id' not in auth_user_columns:
+        db.session.execute(text("ALTER TABLE auth_users ADD COLUMN last_read_chat_message_id INTEGER"))
         db.session.commit()
     feedback_request_columns = {column['name'] for column in inspector.get_columns('feedback_requests')}
     if 'created_by_user_id' not in feedback_request_columns:
@@ -468,6 +472,45 @@ def _chat_message_payload(row):
     }
 
 
+def _get_latest_chat_message_id():
+    row = db.session.query(db.func.max(ChatMessage.id).label('latest_chat_message_id')).first()
+    if not row:
+        return None
+    latest_chat_message_id = getattr(row, 'latest_chat_message_id', None)
+    if latest_chat_message_id is None and isinstance(row, (tuple, list)) and row:
+        latest_chat_message_id = row[0]
+    return int(latest_chat_message_id) if latest_chat_message_id is not None else None
+
+
+def _mark_chat_read(user, latest_chat_message_id=None):
+    if not user:
+        return None
+    resolved_latest_chat_message_id = latest_chat_message_id or _get_latest_chat_message_id()
+    if resolved_latest_chat_message_id is None:
+        return None
+    current_last_read = user.last_read_chat_message_id
+    if current_last_read == resolved_latest_chat_message_id:
+        return resolved_latest_chat_message_id
+    user.last_read_chat_message_id = resolved_latest_chat_message_id
+    db.session.commit()
+    return resolved_latest_chat_message_id
+
+
+def _chat_unread_payload(user, latest_chat_message_id=None):
+    resolved_latest_chat_message_id = latest_chat_message_id if latest_chat_message_id is not None else _get_latest_chat_message_id()
+    last_read_chat_message_id = int(user.last_read_chat_message_id) if user and user.last_read_chat_message_id is not None else None
+    has_unread = bool(
+        user
+        and resolved_latest_chat_message_id is not None
+        and (last_read_chat_message_id is None or last_read_chat_message_id < resolved_latest_chat_message_id)
+    )
+    return {
+        'hasUnread': has_unread,
+        'lastReadChatMessageId': last_read_chat_message_id,
+        'latestChatMessageId': resolved_latest_chat_message_id,
+    }
+
+
 @app.route('/api/feedback-requests', methods=['GET'])
 def get_feedback_requests():
     _sess, user = _require_authenticated_user()
@@ -570,10 +613,34 @@ def get_chat_messages():
         limit = max(1, min(int(limit_raw), 500))
     except Exception:
         limit = 200
+    mark_read_raw = str(request.args.get('markRead', '') or '').strip().lower()
+    should_mark_read = mark_read_raw in {'1', 'true', 'yes', 'y'}
 
     rows = ChatMessage.query.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit).all()
+    latest_chat_message_id = rows[0].id if rows else None
+    if should_mark_read and latest_chat_message_id is not None:
+        _mark_chat_read(user, latest_chat_message_id)
     payload = [_chat_message_payload(row) for row in reversed(rows)]
     return jsonify(payload), 200
+
+
+@app.route('/api/chat/unread-status', methods=['GET'])
+def get_chat_unread_status():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    return jsonify(_chat_unread_payload(user)), 200
+
+
+@app.route('/api/chat/read', methods=['POST'])
+def mark_chat_read():
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    latest_chat_message_id = _mark_chat_read(user)
+    return jsonify(_chat_unread_payload(user, latest_chat_message_id)), 200
 
 
 @app.route('/api/chat/messages', methods=['POST'])
@@ -599,6 +666,7 @@ def create_chat_message():
     )
     db.session.add(row)
     db.session.commit()
+    _mark_chat_read(user, row.id)
 
     return jsonify(_chat_message_payload(row)), 201
 
