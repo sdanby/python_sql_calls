@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS  # Make sure to import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Date
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
 from sqlalchemy import inspect
@@ -12,6 +12,9 @@ import importlib
 import re
 import os
 import uuid
+import hashlib
+import smtplib
+from email.message import EmailMessage
 from werkzeug.security import generate_password_hash, check_password_hash
 #from consistency import get_parkrun_data
 
@@ -201,6 +204,16 @@ class AuthSession(db.Model):
     revoked = db.Column(db.Boolean, default=False, nullable=False)
 
 
+class AuthPasswordResetToken(db.Model):
+    __tablename__ = 'auth_password_reset_tokens'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('auth_users.id'), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    used_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
 class AuthLoginEvent(db.Model):
     __tablename__ = 'auth_login_events'
     id = db.Column(db.Integer, primary_key=True)
@@ -255,6 +268,7 @@ class ChatMessage(db.Model):
 with app.app_context():
     AuthUser.__table__.create(bind=db.engine, checkfirst=True)
     AuthSession.__table__.create(bind=db.engine, checkfirst=True)
+    AuthPasswordResetToken.__table__.create(bind=db.engine, checkfirst=True)
     AuthLoginEvent.__table__.create(bind=db.engine, checkfirst=True)
     PageUsageEvent.__table__.create(bind=db.engine, checkfirst=True)
     FeedbackRequest.__table__.create(bind=db.engine, checkfirst=True)
@@ -302,6 +316,116 @@ def _normalize_email(value):
 
 def _session_token():
     return f"{uuid.uuid4().hex}{uuid.uuid4().hex}"
+
+
+def _password_reset_token():
+    return f"{uuid.uuid4().hex}{uuid.uuid4().hex}"
+
+
+def _hash_password_reset_token(value):
+    return hashlib.sha256(str(value or '').encode('utf-8')).hexdigest()
+
+
+def _password_reset_ttl_minutes():
+    try:
+        return max(5, min(int(os.getenv('PASSWORD_RESET_TTL_MINUTES', '60')), 1440))
+    except Exception:
+        return 60
+
+
+def _password_reset_base_url():
+    candidates = [
+        os.getenv('PASSWORD_RESET_BASE_URL'),
+        os.getenv('FRONTEND_BASE_URL'),
+        os.getenv('APP_BASE_URL')
+    ]
+    for candidate in candidates:
+        value = str(candidate or '').strip()
+        if value:
+            return value.rstrip('/')
+    origin = request.headers.get('Origin') or request.host_url or ''
+    return str(origin).strip().rstrip('/')
+
+
+def _password_reset_link(token):
+    return f"{_password_reset_base_url()}/login?reset_token={token}"
+
+
+def _smtp_config():
+    return {
+        'host': str(os.getenv('SMTP_HOST') or '').strip(),
+        'port': int(str(os.getenv('SMTP_PORT') or '587').strip() or '587'),
+        'username': str(os.getenv('SMTP_USERNAME') or '').strip(),
+        'password': str(os.getenv('SMTP_PASSWORD') or '').strip(),
+        'from_email': str(os.getenv('SMTP_FROM_EMAIL') or '').strip(),
+        'from_name': str(os.getenv('SMTP_FROM_NAME') or 'parkrun project').strip(),
+        'use_tls': str(os.getenv('SMTP_USE_TLS') or 'true').strip().lower() not in {'0', 'false', 'no'},
+        'use_ssl': str(os.getenv('SMTP_USE_SSL') or 'false').strip().lower() in {'1', 'true', 'yes'},
+    }
+
+
+def _password_reset_email_enabled():
+    config = _smtp_config()
+    return bool(config['host'] and config['from_email'])
+
+
+def _send_email(subject, body_text, recipient_email):
+    config = _smtp_config()
+    if not _password_reset_email_enabled():
+        raise RuntimeError('Password reset email is not configured.')
+
+    message = EmailMessage()
+    message['Subject'] = subject
+    sender = config['from_email']
+    if config['from_name']:
+        sender = f"{config['from_name']} <{config['from_email']}>"
+    message['From'] = sender
+    message['To'] = recipient_email
+    message.set_content(body_text)
+
+    if config['use_ssl']:
+        with smtplib.SMTP_SSL(config['host'], config['port']) as smtp:
+            if config['username']:
+                smtp.login(config['username'], config['password'])
+            smtp.send_message(message)
+        return
+
+    with smtplib.SMTP(config['host'], config['port']) as smtp:
+        smtp.ehlo()
+        if config['use_tls']:
+            smtp.starttls()
+            smtp.ehlo()
+        if config['username']:
+            smtp.login(config['username'], config['password'])
+        smtp.send_message(message)
+
+
+def _invalidate_active_password_reset_tokens(user_id):
+    if not user_id:
+        return
+    AuthPasswordResetToken.query.filter(
+        AuthPasswordResetToken.user_id == user_id,
+        AuthPasswordResetToken.used_at.is_(None),
+        AuthPasswordResetToken.expires_at >= datetime.utcnow()
+    ).update({'used_at': datetime.utcnow()}, synchronize_session=False)
+    db.session.commit()
+
+
+def _get_password_reset_token_row(token):
+    normalized_token = str(token or '').strip()
+    if not normalized_token:
+        return None
+    token_hash = _hash_password_reset_token(normalized_token)
+    return AuthPasswordResetToken.query.filter_by(token_hash=token_hash).first()
+
+
+def _password_reset_status_payload(token_row):
+    now = datetime.utcnow()
+    is_valid = bool(token_row and token_row.used_at is None and token_row.expires_at and token_row.expires_at >= now)
+    return {
+        'valid': is_valid,
+        'expiresAt': token_row.expires_at.isoformat() if token_row and token_row.expires_at else None,
+    }
 
 
 def _resolve_default_course(event_code_value, event_name_value):
@@ -685,7 +809,8 @@ def _format_db_datetime(value):
 @app.route('/api/auth/config', methods=['GET'])
 def auth_config():
     return jsonify({
-        'googleClientId': os.getenv('GOOGLE_CLIENT_ID') or ''
+        'googleClientId': os.getenv('GOOGLE_CLIENT_ID') or '',
+        'passwordResetEnabled': _password_reset_email_enabled()
     }), 200
 
 
@@ -776,6 +901,76 @@ def auth_login():
     payload_user = _user_payload(user)
     payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
     return jsonify({'token': token, 'user': payload_user}), 200
+
+
+@app.route('/api/auth/password-reset/request', methods=['POST'])
+def auth_password_reset_request():
+    if not _password_reset_email_enabled():
+        return jsonify({'error': 'Password reset email is not configured.'}), 503
+
+    payload = request.get_json(silent=True) or {}
+    email = _normalize_email(payload.get('email'))
+    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return jsonify({'error': 'Valid email is required.'}), 400
+
+    user = AuthUser.query.filter_by(email=email).first()
+    if user:
+        _invalidate_active_password_reset_tokens(user.id)
+        plain_token = _password_reset_token()
+        expires_at = datetime.utcnow() + timedelta(minutes=_password_reset_ttl_minutes())
+        db.session.add(AuthPasswordResetToken(
+            user_id=user.id,
+            token_hash=_hash_password_reset_token(plain_token),
+            expires_at=expires_at
+        ))
+        db.session.commit()
+        reset_link = _password_reset_link(plain_token)
+        _send_email(
+            'Reset your parkrun project password',
+            (
+                f"Hello,\n\n"
+                f"We received a request to reset your parkrun project password.\n\n"
+                f"Open this link to choose a new password:\n{reset_link}\n\n"
+                f"This link expires in {_password_reset_ttl_minutes()} minutes.\n\n"
+                f"If you did not request this, you can ignore this email."
+            ),
+            user.email
+        )
+
+    return jsonify({'ok': True, 'message': 'If that email address is registered, a password reset link has been sent.'}), 200
+
+
+@app.route('/api/auth/password-reset/validate', methods=['GET'])
+def auth_password_reset_validate():
+    token = request.args.get('token')
+    token_row = _get_password_reset_token_row(token)
+    return jsonify(_password_reset_status_payload(token_row)), 200
+
+
+@app.route('/api/auth/password-reset/confirm', methods=['POST'])
+def auth_password_reset_confirm():
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get('token') or '').strip()
+    password = str(payload.get('password') or '')
+
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters.'}), 400
+
+    token_row = _get_password_reset_token_row(token)
+    status_payload = _password_reset_status_payload(token_row)
+    if not status_payload['valid']:
+        return jsonify({'error': 'This password reset link is invalid or has expired.'}), 400
+
+    user = AuthUser.query.filter_by(id=token_row.user_id).first()
+    if not user:
+        return jsonify({'error': 'This password reset link is invalid or has expired.'}), 400
+
+    user.password_hash = generate_password_hash(password)
+    token_row.used_at = datetime.utcnow()
+    AuthSession.query.filter_by(user_id=user.id, revoked=False).update({'revoked': True}, synchronize_session=False)
+    db.session.commit()
+
+    return jsonify({'ok': True, 'message': 'Your password has been updated. Please sign in.'}), 200
 
 
 @app.route('/api/auth/google', methods=['POST'])
