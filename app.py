@@ -2180,6 +2180,262 @@ def get_event_info():
         app.logger.exception("get_event_info error")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/api/event_highlights', methods=['GET'])
+def get_event_highlights():
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_name = request.args.get('event_name', default=None, type=str)
+    event_date = request.args.get('event_date', default=None, type=str)
+
+    if not event_date or (event_code is None and not str(event_name or '').strip()):
+        return jsonify({'error': 'Provide event_date and one of event_code or event_name'}), 400
+
+    def build_date_variants(raw_value):
+        variants = []
+        if raw_value:
+            variants.append(str(raw_value).strip())
+        if raw_value and re.match(r'^\d{4}-\d{2}-\d{2}$', str(raw_value).strip()):
+            yyyy, mm, dd = str(raw_value).strip().split('-')
+            variants.append(f'{dd}/{mm}/{yyyy}')
+        if raw_value and re.match(r'^\d{2}/\d{2}/\d{4}$', str(raw_value).strip()):
+            dd, mm, yyyy = str(raw_value).strip().split('/')
+            variants.append(f'{yyyy}-{mm}-{dd}')
+        ordered = []
+        seen = set()
+        for value in variants:
+            if value and value not in seen:
+                ordered.append(value)
+                seen.add(value)
+        return ordered
+
+    def parse_age_grade_value(raw_value):
+        if raw_value is None:
+            return None
+        text_value = str(raw_value).strip().replace('%', '')
+        if not text_value:
+            return None
+        try:
+            return float(text_value)
+        except Exception:
+            return None
+
+    def parse_time_to_seconds(raw_value):
+        if raw_value is None:
+            return None
+        text_value = str(raw_value).strip()
+        if not text_value:
+            return None
+        try:
+            if re.match(r'^-?\d+(?:\.\d+)?$', text_value):
+                return float(text_value)
+            parts = [int(part) for part in text_value.split(':')]
+            if len(parts) == 3:
+                return (parts[0] * 3600) + (parts[1] * 60) + parts[2]
+            if len(parts) == 2:
+                return (parts[0] * 60) + parts[1]
+            if len(parts) == 1:
+                return parts[0]
+        except Exception:
+            return None
+        return None
+
+    try:
+        resolved_event_code = event_code
+        resolved_event_name = None
+        if resolved_event_code is None:
+            row = db.session.execute(text("""
+                SELECT event_code, COALESCE(NULLIF(display_name, ''), event_name) AS event_name
+                FROM events
+                WHERE LOWER(event_name) = LOWER(:event_name) OR LOWER(display_name) = LOWER(:event_name)
+                LIMIT 1
+            """), {'event_name': event_name}).mappings().first()
+            if row:
+                resolved_event_code = row.get('event_code')
+                resolved_event_name = row.get('event_name')
+
+        if resolved_event_code is None:
+            return jsonify({'error': 'Event not found'}), 404
+
+        if resolved_event_name is None:
+            row = db.session.execute(text("""
+                SELECT COALESCE(NULLIF(display_name, ''), event_name) AS event_name
+                FROM events
+                WHERE event_code = :event_code
+                LIMIT 1
+            """), {'event_code': resolved_event_code}).mappings().first()
+            resolved_event_name = row.get('event_name') if row else str(event_name or '')
+
+        event_row = None
+        resolved_event_date = None
+        for candidate_date in build_date_variants(event_date):
+            event_row = db.session.execute(text("""
+                SELECT
+                    pe.event_code,
+                    pe.event_date,
+                    pe.event_number,
+                    pe.last_position,
+                    pe.volunteers,
+                    pe.avg_age,
+                    pe.first_timers_count,
+                    pe.pb_count,
+                    pe.tourist_count,
+                    pe.regulars,
+                    pe.returners_count,
+                    pe.club_count,
+                    COALESCE(NULLIF(e.display_name, ''), e.event_name) AS event_name
+                FROM parkrun_events pe
+                LEFT JOIN events e ON pe.event_code = e.event_code
+                WHERE pe.event_code = :event_code AND pe.event_date = :event_date
+                LIMIT 1
+            """), {'event_code': resolved_event_code, 'event_date': candidate_date}).mappings().first()
+            if event_row:
+                resolved_event_date = candidate_date
+                break
+
+        if not event_row or resolved_event_date is None:
+            return jsonify({'error': 'Event not found'}), 404
+
+        position_rows = db.session.execute(text("""
+            SELECT
+                ep.position,
+                ep.name,
+                ep.athlete_code,
+                ep.time,
+                ep.age_grade,
+                COALESCE(ep.comment, '') AS comment,
+                COALESCE(a.total_runs, 0) AS total_runs
+            FROM eventpositions ep
+            LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
+            WHERE ep.event_code = :event_code AND ep.event_date = :event_date
+            ORDER BY ep.position
+        """), {'event_code': resolved_event_code, 'event_date': resolved_event_date}).mappings().all()
+
+        try:
+            volunteer_rows = db.session.execute(text("""
+                SELECT athlete_name, athlete_code, volunteer_role
+                FROM volunteers
+                WHERE event_code = :event_code AND event_date = :event_date
+                ORDER BY COALESCE(athlete_name, athlete_code), athlete_code
+            """), {'event_code': resolved_event_code, 'event_date': resolved_event_date}).mappings().all()
+        except Exception:
+            volunteer_rows = []
+
+        first_finisher = None
+        top_age_grade = None
+        first_timers = []
+        pb_roster = []
+        milestone_candidates = []
+        minute_counts = {}
+
+        for row in position_rows:
+            position = row.get('position')
+            athlete_code_value = row.get('athlete_code')
+            safe_name = str(row.get('name') or athlete_code_value or '').strip()
+            safe_comment = str(row.get('comment') or '').strip()
+            time_value = row.get('time')
+            lower_comment = safe_comment.lower()
+
+            if first_finisher is None:
+                first_finisher = {
+                    'position': position,
+                    'name': safe_name,
+                    'athlete_code': athlete_code_value,
+                    'time': time_value
+                }
+
+            age_grade_value = parse_age_grade_value(row.get('age_grade'))
+            if age_grade_value is not None:
+                if top_age_grade is None or age_grade_value > top_age_grade['age_grade_value']:
+                    top_age_grade = {
+                        'position': position,
+                        'name': safe_name,
+                        'athlete_code': athlete_code_value,
+                        'time': time_value,
+                        'age_grade': row.get('age_grade'),
+                        'age_grade_value': age_grade_value
+                    }
+
+            total_runs_value = int(row.get('total_runs') or 0)
+            if total_runs_value == 1 or 'first timer' in lower_comment:
+                first_timers.append({
+                    'position': position,
+                    'name': safe_name,
+                    'athlete_code': athlete_code_value,
+                    'comment': safe_comment,
+                    'total_runs': total_runs_value
+                })
+
+            if 'pb' in lower_comment:
+                pb_roster.append({
+                    'position': position,
+                    'name': safe_name,
+                    'athlete_code': athlete_code_value,
+                    'time': time_value,
+                    'comment': safe_comment
+                })
+
+            if safe_comment and 'pb' not in lower_comment and 'first timer' not in lower_comment:
+                milestone_candidates.append({
+                    'position': position,
+                    'name': safe_name,
+                    'athlete_code': athlete_code_value,
+                    'comment': safe_comment
+                })
+
+            time_seconds = parse_time_to_seconds(time_value)
+            if time_seconds is not None:
+                minute_bucket = int(time_seconds // 60)
+                minute_counts[minute_bucket] = minute_counts.get(minute_bucket, 0) + 1
+
+        finishers_by_minute = [
+            {
+                'minute': minute,
+                'label': f'{minute}m',
+                'count': minute_counts[minute]
+            }
+            for minute in sorted(minute_counts.keys())
+        ]
+
+        participants = len(position_rows)
+        payload = {
+            'event_code': event_row.get('event_code'),
+            'event_date': event_row.get('event_date'),
+            'event_number': event_row.get('event_number'),
+            'last_position': event_row.get('last_position'),
+            'volunteers': event_row.get('volunteers'),
+            'avg_age': event_row.get('avg_age'),
+            'first_timers_count': event_row.get('first_timers_count'),
+            'pb_count': event_row.get('pb_count'),
+            'tourist_count': event_row.get('tourist_count'),
+            'regulars': event_row.get('regulars'),
+            'returners_count': event_row.get('returners_count'),
+            'club_count': event_row.get('club_count'),
+            'event_name': event_row.get('event_name') or resolved_event_name,
+            'participants': participants,
+            'distance_covered_km': round(participants * 5, 1),
+            'first_finisher': first_finisher,
+            'top_age_grade': top_age_grade,
+            'first_timers': first_timers[:12],
+            'pb_roster': pb_roster[:12],
+            'volunteer_roster': [
+                {
+                    'name': str(row.get('athlete_name') or row.get('athlete_code') or '').strip(),
+                    'athlete_code': row.get('athlete_code'),
+                    'role': row.get('volunteer_role')
+                }
+                for row in volunteer_rows[:24]
+            ],
+            'milestone_candidates': milestone_candidates[:12],
+            'finishers_by_minute': finishers_by_minute,
+            'provisional_notes': [
+                'Milestone and first-timer lists are inferred from runner comments and athlete totals.',
+                'Volunteer roster depends on the volunteer scrape having been run for this event.'
+            ]
+        }
+        return jsonify(payload), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/eventby_number', methods=['GET'])
 def get_event_by_number():
     """Return event_date and optional event_name for a supplied event_code + event_number.
