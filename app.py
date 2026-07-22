@@ -2389,6 +2389,7 @@ def get_event_highlights():
                     'athlete_code': athlete_code_value,
                     'time': time_value,
                     'age_group': age_group_value,
+                    'age_grade': row.get('age_grade'),
                     'sex': sex,
                 }
 
@@ -2399,6 +2400,7 @@ def get_event_highlights():
                     'athlete_code': athlete_code_value,
                     'time': time_value,
                     'age_group': age_group_value,
+                    'age_grade': row.get('age_grade'),
                 }
 
             age_grade_value = parse_age_grade_value(row.get('age_grade'))
