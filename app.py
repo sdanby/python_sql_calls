@@ -20,6 +20,7 @@ from shared_feedback_handlers import (
     build_feedback_update_response,
 )
 from shared_admin_user_handlers import (
+    build_admin_access_error_response,
     build_admin_activity_response,
     build_admin_status_response,
     build_admin_user_set_admin_response,
@@ -1061,10 +1062,10 @@ def admin_users_list():
 @app.route('/api/admin/users/<int:user_id>/admin', methods=['POST'])
 def admin_user_set_admin(user_id):
     _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not _can_access_admin(user):
-        return jsonify({'error': 'Forbidden'}), 403
+    access_error = build_admin_access_error_response(user, can_access_admin=_can_access_admin(user))
+    if access_error is not None:
+        response_body, status_code = access_error
+        return jsonify(response_body), status_code
 
     payload = request.get_json(silent=True) or {}
     response_body, status_code = build_admin_user_set_admin_response(
@@ -1082,10 +1083,10 @@ def admin_user_set_admin(user_id):
 @app.route('/api/admin/users/<int:user_id>/default-course', methods=['POST'])
 def admin_user_set_default_course(user_id):
     _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not _can_access_admin(user):
-        return jsonify({'error': 'Forbidden'}), 403
+    access_error = build_admin_access_error_response(user, can_access_admin=_can_access_admin(user))
+    if access_error is not None:
+        response_body, status_code = access_error
+        return jsonify(response_body), status_code
 
     payload = request.get_json(silent=True) or {}
     response_body, status_code = build_admin_user_set_default_course_response(
@@ -1102,10 +1103,10 @@ def admin_user_set_default_course(user_id):
 @app.route('/api/admin/users/<int:user_id>/athlete-code', methods=['POST'])
 def admin_user_set_athlete_code(user_id):
     _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not _can_access_admin(user):
-        return jsonify({'error': 'Forbidden'}), 403
+    access_error = build_admin_access_error_response(user, can_access_admin=_can_access_admin(user))
+    if access_error is not None:
+        response_body, status_code = access_error
+        return jsonify(response_body), status_code
 
     payload = request.get_json(silent=True) or {}
     response_body, status_code = build_admin_user_set_athlete_code_response(

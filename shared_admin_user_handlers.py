@@ -39,6 +39,14 @@ def build_admin_user_set_admin_response(
     return response_body, 200
 
 
+def build_admin_access_error_response(user, *, can_access_admin):
+    if not user:
+        return {'error': 'Unauthorized'}, 401
+    if not can_access_admin:
+        return {'error': 'Forbidden'}, 403
+    return None
+
+
 def build_admin_status_response(
     user,
     *,
