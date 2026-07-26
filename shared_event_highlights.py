@@ -13,6 +13,18 @@ def normalize_mapping_rows(rows):
     return [normalize_mapping_row(row) for row in (rows or [])]
 
 
+def build_event_options_payload(rows):
+    normalized_rows = normalize_mapping_rows(rows)
+    return [
+        {
+            'eventCode': str(row.get('event_code') or ''),
+            'eventName': str(row.get('event_name') or ''),
+        }
+        for row in normalized_rows
+        if row.get('event_code') is not None and row.get('event_name') is not None
+    ]
+
+
 def build_date_variants(raw_value):
     variants = []
     if raw_value:

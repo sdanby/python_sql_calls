@@ -36,6 +36,7 @@ from shared_password_reset_handlers import (
     build_password_reset_validate_response,
 )
 from shared_event_highlights import (
+    build_event_options_payload,
     build_event_highlights_payload,
     normalize_mapping_rows,
     resolve_event_highlights_context,
@@ -834,14 +835,7 @@ def get_event_options():
         FROM events
         ORDER BY COALESCE(NULLIF(display_name, ''), event_name)
     """)).mappings().all()
-    payload = [
-        {
-            'eventCode': str(row.get('event_code') or ''),
-            'eventName': str(row.get('event_name') or '')
-        }
-        for row in rows
-        if row.get('event_code') is not None and row.get('event_name') is not None
-    ]
+    payload = build_event_options_payload(rows)
     return jsonify(payload), 200
 
 
