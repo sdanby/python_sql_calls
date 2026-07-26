@@ -8,6 +8,7 @@ from sqlalchemy import text # Import text from SQLAlchemy
 from sqlalchemy import inspect
 from lists_api import lists_bp, get_adjustment_fields_sql 
 from shared_auth_handlers import (
+    build_auth_google_response,
     build_auth_link_athlete_response,
     build_auth_login_response,
     build_auth_logout_response,
@@ -935,75 +936,27 @@ def auth_password_reset_confirm():
 @app.route('/api/auth/google', methods=['POST'])
 def auth_google():
     payload = request.get_json(silent=True) or {}
-    credential = payload.get('credential') or payload.get('idToken')
-    athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
-    default_course_code, default_course_name = _resolve_default_course(
-        payload.get('defaultCourseCode'),
-        payload.get('defaultCourseName')
-    )
-    if not credential:
-        return jsonify({'error': 'Google credential is required'}), 400
-
-    client_id = os.getenv('GOOGLE_CLIENT_ID')
-    if not client_id:
-        return jsonify({'error': 'GOOGLE_CLIENT_ID is not configured on backend'}), 500
-
-    try:
-        claims = id_token.verify_oauth2_token(
+    response_body, status_code = build_auth_google_response(
+        payload,
+        AuthUser=AuthUser,
+        AuthSession=AuthSession,
+        db=db,
+        google_dependencies_ready=lambda: id_token is not None and google_requests is not None,
+        verify_google_credential=lambda credential, client_id: id_token.verify_oauth2_token(
             credential,
             google_requests.Request(),
-            client_id
-        )
-    except Exception as exc:
-        return jsonify({'error': f'Invalid Google token: {exc}'}), 401
-
-    google_sub = claims.get('sub')
-    email = _normalize_email(claims.get('email'))
-    display_name = claims.get('name')
-    if not google_sub or not email:
-        return jsonify({'error': 'Google token missing required claims.'}), 400
-
-    user = AuthUser.query.filter_by(google_sub=google_sub).first()
-    if not user:
-        user = AuthUser.query.filter_by(email=email).first()
-
-    previous_last_login_at = user.last_login_at if user else None
-
-    if not user:
-        user = AuthUser(
-            email=email,
-            google_sub=google_sub,
-            display_name=display_name,
-            athlete_code=athlete_code,
-            default_course_code=default_course_code,
-            default_course_name=default_course_name
-        )
-        db.session.add(user)
-    else:
-        if not user.google_sub:
-            user.google_sub = google_sub
-        if display_name and not user.display_name:
-            user.display_name = display_name
-        if 'athleteCode' in payload:
-            user.athlete_code = athlete_code
-        if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
-            user.default_course_code = default_course_code
-            user.default_course_name = default_course_name
-
-    user.last_login_at = datetime.utcnow()
-    db.session.commit()
-
-    session_token = _session_token()
-    db.session.add(AuthSession(token=session_token, user_id=user.id, provider='google'))
-    db.session.commit()
-    _record_login_event(user.id, 'google', True)
-
-    payload_user = _user_payload(user)
-    payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
-    return jsonify({
-        'token': session_token,
-        'user': payload_user
-    }), 200
+            client_id,
+        ),
+        google_client_id=lambda: os.getenv('GOOGLE_CLIENT_ID'),
+        normalize_email=_normalize_email,
+        resolve_athlete_code=_resolve_athlete_code,
+        resolve_default_course=_resolve_default_course,
+        session_token_factory=_session_token,
+        record_login_event=_record_login_event,
+        user_payload_factory=_user_payload,
+        utcnow=datetime.utcnow,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/auth/logout', methods=['POST'])

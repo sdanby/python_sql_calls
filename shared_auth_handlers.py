@@ -98,6 +98,93 @@ def build_auth_login_response(
     return {'token': token, 'user': payload_user}, 200
 
 
+def build_auth_google_response(
+    payload,
+    *,
+    AuthUser,
+    AuthSession,
+    db,
+    google_dependencies_ready,
+    verify_google_credential,
+    google_client_id,
+    normalize_email,
+    resolve_athlete_code,
+    resolve_default_course,
+    session_token_factory,
+    record_login_event,
+    user_payload_factory,
+    utcnow,
+):
+    if not google_dependencies_ready():
+        return {'error': 'Google auth dependencies are not installed on backend.'}, 501
+
+    credential = payload.get('credential') or payload.get('idToken')
+    athlete_code = resolve_athlete_code(payload.get('athleteCode'))
+    default_course_code, default_course_name = resolve_default_course(
+        payload.get('defaultCourseCode'),
+        payload.get('defaultCourseName')
+    )
+    if not credential:
+        return {'error': 'Google credential is required.'}, 400
+
+    client_id = google_client_id()
+    if not client_id:
+        return {'error': 'GOOGLE_CLIENT_ID is not configured on backend.'}, 500
+
+    try:
+        claims = verify_google_credential(credential, client_id)
+    except Exception as exc:
+        if record_login_event is not None:
+            record_login_event(None, 'google', False)
+        return {'error': f'Invalid Google token: {exc}'}, 401
+
+    google_sub = claims.get('sub')
+    email = normalize_email(claims.get('email'))
+    display_name = claims.get('name')
+    if not google_sub or not email:
+        return {'error': 'Google token missing required claims.'}, 400
+
+    user = AuthUser.query.filter_by(google_sub=google_sub).first()
+    if not user:
+        user = AuthUser.query.filter_by(email=email).first()
+
+    previous_last_login_at = user.last_login_at if user else None
+
+    if not user:
+        user = AuthUser(
+            email=email,
+            google_sub=google_sub,
+            display_name=display_name,
+            athlete_code=athlete_code,
+            default_course_code=default_course_code,
+            default_course_name=default_course_name,
+        )
+        db.session.add(user)
+    else:
+        if not user.google_sub:
+            user.google_sub = google_sub
+        if display_name and not user.display_name:
+            user.display_name = display_name
+        if 'athleteCode' in payload:
+            user.athlete_code = athlete_code
+        if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
+            user.default_course_code = default_course_code
+            user.default_course_name = default_course_name
+
+    user.last_login_at = utcnow()
+    db.session.commit()
+
+    token = session_token_factory()
+    db.session.add(AuthSession(token=token, user_id=user.id, provider='google'))
+    db.session.commit()
+    if record_login_event is not None:
+        record_login_event(user.id, 'google', True)
+
+    payload_user = user_payload_factory(user)
+    payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
+    return {'token': token, 'user': payload_user}, 200
+
+
 def build_auth_logout_response(
     payload,
     *,
