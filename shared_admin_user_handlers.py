@@ -39,6 +39,47 @@ def build_admin_user_set_admin_response(
     return response_body, 200
 
 
+def build_admin_status_response(
+    user,
+    *,
+    user_payload_factory,
+    admin_count,
+    bootstrap_open,
+    can_access_admin,
+):
+    if not user:
+        return {'error': 'Unauthorized'}, 401
+
+    return {
+        'adminCount': int(admin_count),
+        'bootstrapOpen': bool(bootstrap_open),
+        'canAccessAdmin': bool(can_access_admin),
+        'user': user_payload_factory(user),
+    }, 200
+
+
+def build_admin_users_list_response(
+    user,
+    *,
+    AuthUser,
+    user_row_payload_factory,
+    admin_count,
+    bootstrap_open,
+    can_access_admin,
+):
+    if not user:
+        return {'error': 'Unauthorized'}, 401
+    if not can_access_admin:
+        return {'error': 'Forbidden'}, 403
+
+    rows = AuthUser.query.order_by(AuthUser.created_at.desc()).all()
+    return {
+        'users': [user_row_payload_factory(row) for row in rows],
+        'adminCount': int(admin_count),
+        'bootstrapOpen': bool(bootstrap_open),
+    }, 200
+
+
 def build_admin_user_set_athlete_code_response(
     user_id,
     payload,

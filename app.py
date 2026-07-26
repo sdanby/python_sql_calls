@@ -20,8 +20,10 @@ from shared_feedback_handlers import (
     build_feedback_update_response,
 )
 from shared_admin_user_handlers import (
+    build_admin_status_response,
     build_admin_user_set_admin_response,
     build_admin_user_set_athlete_code_response,
+    build_admin_users_list_response,
 )
 from shared_password_reset_handlers import (
     build_auth_config_response,
@@ -545,6 +547,20 @@ def _user_payload(user):
     }
 
 
+def _admin_user_row_payload(user):
+    return {
+        'id': user.id,
+        'email': user.email,
+        'displayName': user.display_name,
+        'athleteCode': user.athlete_code,
+        'defaultCourseCode': user.default_course_code,
+        'defaultCourseName': user.default_course_name,
+        'isAdmin': bool(user.is_admin),
+        'createdAt': _format_db_datetime(user.created_at),
+        'lastLoginAt': _format_db_datetime(user.last_login_at),
+    }
+
+
 def _record_login_event(user_id, provider, success):
     evt = AuthLoginEvent(
         user_id=user_id,
@@ -1012,49 +1028,32 @@ def auth_me():
 @app.route('/api/admin/status', methods=['GET'])
 def admin_status():
     _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
     admin_count = _admin_count()
     bootstrap_open = admin_count == 0
-    can_access_admin = bool(user.is_admin) or bootstrap_open
+    can_access_admin = bool(user) and (bool(user.is_admin) or bootstrap_open)
 
-    return jsonify({
-        'adminCount': admin_count,
-        'bootstrapOpen': bootstrap_open,
-        'canAccessAdmin': can_access_admin,
-        'user': _user_payload(user)
-    }), 200
+    response_body, status_code = build_admin_status_response(
+        user,
+        user_payload_factory=_user_payload,
+        admin_count=admin_count,
+        bootstrap_open=bootstrap_open,
+        can_access_admin=can_access_admin,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/admin/users', methods=['GET'])
 def admin_users_list():
     _sess, user = _require_authenticated_user()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    if not _can_access_admin(user):
-        return jsonify({'error': 'Forbidden'}), 403
-
-    rows = AuthUser.query.order_by(AuthUser.created_at.desc()).all()
-    payload = []
-    for row in rows:
-        payload.append({
-            'id': row.id,
-            'email': row.email,
-            'displayName': row.display_name,
-            'athleteCode': row.athlete_code,
-            'defaultCourseCode': row.default_course_code,
-            'defaultCourseName': row.default_course_name,
-            'isAdmin': bool(row.is_admin),
-            'createdAt': _format_db_datetime(row.created_at),
-            'lastLoginAt': _format_db_datetime(row.last_login_at)
-        })
-
-    return jsonify({
-        'users': payload,
-        'adminCount': _admin_count(),
-        'bootstrapOpen': _is_admin_bootstrap_open()
-    }), 200
+    response_body, status_code = build_admin_users_list_response(
+        user,
+        AuthUser=AuthUser,
+        user_row_payload_factory=_admin_user_row_payload,
+        admin_count=_admin_count(),
+        bootstrap_open=_is_admin_bootstrap_open(),
+        can_access_admin=_can_access_admin(user),
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/admin/users/<int:user_id>/admin', methods=['POST'])
