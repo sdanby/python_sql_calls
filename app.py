@@ -7,6 +7,18 @@ from sqlalchemy import func
 from sqlalchemy import text # Import text from SQLAlchemy
 from sqlalchemy import inspect
 from lists_api import lists_bp, get_adjustment_fields_sql 
+from shared_auth_handlers import (
+    build_auth_link_athlete_response,
+    build_auth_login_response,
+    build_auth_logout_response,
+    build_auth_me_response,
+    build_auth_register_response,
+)
+from shared_feedback_handlers import (
+    build_feedback_create_response,
+    build_feedback_list_response,
+    build_feedback_update_response,
+)
 import traceback
 import importlib
 import re
@@ -641,11 +653,11 @@ def get_feedback_requests():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    rows = FeedbackRequest.query.order_by(FeedbackRequest.id.asc()).all()
-    payload = []
-    for row in rows:
-        payload.append(_feedback_payload(row))
-    return jsonify(payload), 200
+    response_body, status_code = build_feedback_list_response(
+        FeedbackRequest=FeedbackRequest,
+        feedback_payload_factory=_feedback_payload,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/feedback-requests', methods=['POST'])
@@ -655,32 +667,16 @@ def create_feedback_request():
         return jsonify({'error': 'Unauthorized'}), 401
 
     payload = request.get_json(silent=True) or {}
-    request_type_raw = str(payload.get('type') or '').strip().lower()
-    title = str(payload.get('title') or '').strip()
-    details = str(payload.get('details') or '').strip()
-
-    if request_type_raw not in ('error', 'suggestion'):
-        return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
-    if not title:
-        return jsonify({'error': 'title is required'}), 400
-    if not details:
-        return jsonify({'error': 'details are required'}), 400
-
-    row = FeedbackRequest(
-        request_type=request_type_raw,
-        title=title,
-        details=details,
-        status='logged',
-        created_by_user_id=user.id,
-        created_by_display_name=(user.display_name or '').strip() or None,
-        created_by_email=user.email,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+    response_body, status_code = build_feedback_create_response(
+        payload,
+        FeedbackRequest=FeedbackRequest,
+        db=db,
+        user=user,
+        feedback_payload_factory=_feedback_payload,
+        utcnow=datetime.utcnow,
+        set_updated_at=True,
     )
-    db.session.add(row)
-    db.session.commit()
-
-    return jsonify(_feedback_payload(row)), 201
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/feedback-requests/<int:request_id>', methods=['PUT'])
@@ -688,42 +684,22 @@ def update_feedback_request(request_id):
     _sess, user = _require_authenticated_user()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
-    if not bool(user.is_admin):
-        return jsonify({'error': 'Forbidden'}), 403
 
     payload = request.get_json(silent=True) or {}
-    request_type_raw = str(payload.get('type') or '').strip().lower()
-    title = str(payload.get('title') or '').strip()
-    details = str(payload.get('details') or '').strip()
-    status_raw = str(payload.get('status') or 'updated').strip().lower()
-    allowed_statuses = {'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed', 'deleted'}
-
-    if request_type_raw not in ('error', 'suggestion'):
-        return jsonify({'error': 'type must be "error" or "suggestion"'}), 400
-    if not title:
-        return jsonify({'error': 'title is required'}), 400
-    if not details:
-        return jsonify({'error': 'details are required'}), 400
-    if status_raw not in allowed_statuses:
-        return jsonify({'error': 'status is invalid'}), 400
-
-    row = FeedbackRequest.query.filter_by(id=request_id).first()
-    if not row:
-        return jsonify({'error': 'feedback request not found'}), 404
-
-    if status_raw == 'deleted':
-        db.session.delete(row)
-        db.session.commit()
-        return jsonify({'id': request_id, 'deleted': True}), 200
-
-    row.request_type = request_type_raw
-    row.title = title
-    row.details = details
-    row.status = status_raw
-    row.updated_at = datetime.utcnow()
-    db.session.commit()
-
-    return jsonify(_feedback_payload(row)), 200
+    response_body, status_code = build_feedback_update_response(
+        request_id,
+        payload,
+        FeedbackRequest=FeedbackRequest,
+        db=db,
+        is_admin=bool(user.is_admin),
+        feedback_payload_factory=_feedback_payload,
+        utcnow=datetime.utcnow,
+        status_if_missing='updated',
+        allowed_statuses={'logged', 'updated', 'in-progress', 'prioritised', 'rejected', 'on-hold', 'completed', 'deleted'},
+        delete_status='deleted',
+        touch_updated_at=True,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/chat/messages', methods=['GET'])
@@ -836,71 +812,41 @@ def get_event_options():
 @app.route('/api/auth/register', methods=['POST'])
 def auth_register():
     payload = request.get_json(silent=True) or {}
-    email = _normalize_email(payload.get('email'))
-    password = str(payload.get('password') or '')
-    display_name = (payload.get('displayName') or '').strip() or None
-    athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
-    default_course_code, default_course_name = _resolve_default_course(
-        payload.get('defaultCourseCode'),
-        payload.get('defaultCourseName')
+    response_body, status_code = build_auth_register_response(
+        payload,
+        AuthUser=AuthUser,
+        AuthSession=AuthSession,
+        db=db,
+        normalize_email=_normalize_email,
+        resolve_athlete_code=_resolve_athlete_code,
+        resolve_default_course=_resolve_default_course,
+        session_token_factory=_session_token,
+        record_login_event=_record_login_event,
+        user_payload_factory=_user_payload,
+        generate_password_hash=generate_password_hash,
+        utcnow=datetime.utcnow,
     )
-
-    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
-        return jsonify({'error': 'Valid email is required.'}), 400
-    if len(password) < 8:
-        return jsonify({'error': 'Password must be at least 8 characters.'}), 400
-
-    existing = AuthUser.query.filter_by(email=email).first()
-    if existing:
-        return jsonify({'error': 'Email already registered.'}), 409
-
-    user = AuthUser(
-        email=email,
-        password_hash=generate_password_hash(password),
-        display_name=display_name,
-        athlete_code=athlete_code,
-        default_course_code=default_course_code,
-        default_course_name=default_course_name,
-        last_login_at=datetime.utcnow(),
-    )
-    db.session.add(user)
-    db.session.commit()
-
-    token = _session_token()
-    db.session.add(AuthSession(token=token, user_id=user.id, provider='email'))
-    db.session.commit()
-    _record_login_event(user.id, 'email', True)
-
-    return jsonify({'token': token, 'user': _user_payload(user)}), 200
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
     payload = request.get_json(silent=True) or {}
-    email = _normalize_email(payload.get('email'))
-    password = str(payload.get('password') or '')
-
-    user = AuthUser.query.filter_by(email=email).first()
-    if not user or not user.password_hash or not check_password_hash(user.password_hash, password):
-        _record_login_event(user.id if user else None, 'email', False)
-        return jsonify({'error': 'Invalid email or password.'}), 401
-
-    previous_last_login_at = user.last_login_at
-    token = _session_token()
-    if 'athleteCode' in payload:
-        user.athlete_code = _resolve_athlete_code(payload.get('athleteCode'))
-    if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
-        dc_code, dc_name = _resolve_default_course(payload.get('defaultCourseCode'), payload.get('defaultCourseName'))
-        user.default_course_code = dc_code
-        user.default_course_name = dc_name
-    user.last_login_at = datetime.utcnow()
-    db.session.add(AuthSession(token=token, user_id=user.id, provider='email'))
-    db.session.commit()
-    _record_login_event(user.id, 'email', True)
-
-    payload_user = _user_payload(user)
-    payload_user['previousLoginAt'] = previous_last_login_at.isoformat() if previous_last_login_at else None
-    return jsonify({'token': token, 'user': payload_user}), 200
+    response_body, status_code = build_auth_login_response(
+        payload,
+        AuthUser=AuthUser,
+        AuthSession=AuthSession,
+        db=db,
+        normalize_email=_normalize_email,
+        resolve_athlete_code=_resolve_athlete_code,
+        resolve_default_course=_resolve_default_course,
+        session_token_factory=_session_token,
+        record_login_event=_record_login_event,
+        user_payload_factory=_user_payload,
+        check_password_hash=check_password_hash,
+        utcnow=datetime.utcnow,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/auth/password-reset/request', methods=['POST'])
@@ -1050,23 +996,23 @@ def auth_google():
 @app.route('/api/auth/logout', methods=['POST'])
 def auth_logout():
     payload = request.get_json(silent=True) or {}
-    session_token = payload.get('token') or _extract_bearer_token()
-    if not session_token:
-        return jsonify({'ok': True}), 200
-    sess = AuthSession.query.filter_by(token=session_token, revoked=False).first()
-    if sess:
-        sess.revoked = True
-        db.session.commit()
-    return jsonify({'ok': True}), 200
+    response_body, status_code = build_auth_logout_response(
+        payload,
+        AuthSession=AuthSession,
+        db=db,
+        extract_bearer_token=_extract_bearer_token,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/auth/me', methods=['GET'])
 def auth_me():
-    session_token = _extract_bearer_token()
-    _sess, user = _resolve_session(session_token)
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    return jsonify({'user': _user_payload(user)}), 200
+    response_body, status_code = build_auth_me_response(
+        extract_bearer_token=_extract_bearer_token,
+        resolve_session=_resolve_session,
+        user_payload_factory=_user_payload,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/admin/status', methods=['GET'])
@@ -1329,35 +1275,17 @@ def admin_activity_list():
 @app.route('/api/auth/link-athlete', methods=['POST'])
 def auth_link_athlete():
     payload = request.get_json(silent=True) or {}
-    session_token = payload.get('token') or _extract_bearer_token()
-    _sess, user = _resolve_session(session_token)
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    requested_athlete_code = _normalize_athlete_code(payload.get('athleteCode'))
-    resolved_athlete_code = _resolve_athlete_code(requested_athlete_code)
-    requested_default_course_code = payload.get('defaultCourseCode')
-    requested_default_course_name = payload.get('defaultCourseName')
-    resolved_default_course_code, resolved_default_course_name = _resolve_default_course(
-        requested_default_course_code,
-        requested_default_course_name
+    response_body, status_code = build_auth_link_athlete_response(
+        payload,
+        db=db,
+        extract_bearer_token=_extract_bearer_token,
+        resolve_session=_resolve_session,
+        normalize_athlete_code=_normalize_athlete_code,
+        resolve_athlete_code=_resolve_athlete_code,
+        resolve_default_course=_resolve_default_course,
+        user_payload_factory=_user_payload,
     )
-
-    if requested_athlete_code and not resolved_athlete_code:
-        user.athlete_code = None
-        db.session.commit()
-        return jsonify({
-            'ok': True,
-            'user': _user_payload(user),
-            'message': 'athleteCode not found in athletes; stored as NULL.'
-        }), 200
-
-    user.athlete_code = resolved_athlete_code
-    if 'defaultCourseCode' in payload or 'defaultCourseName' in payload:
-        user.default_course_code = resolved_default_course_code
-        user.default_course_name = resolved_default_course_name
-    db.session.commit()
-    return jsonify({'ok': True, 'user': _user_payload(user)}), 200
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/analytics/page-visit', methods=['POST', 'OPTIONS'])
