@@ -80,6 +80,36 @@ def build_admin_users_list_response(
     }, 200
 
 
+def build_admin_user_set_default_course_response(
+    user_id,
+    payload,
+    *,
+    AuthUser,
+    db,
+    user_payload_factory,
+    resolve_default_course,
+):
+    target = AuthUser.query.filter_by(id=user_id).first()
+    if not target:
+        return {'error': 'User not found'}, 404
+
+    default_course_code, default_course_name = resolve_default_course(
+        payload.get('defaultCourseCode'),
+        payload.get('defaultCourseName'),
+    )
+    if not default_course_code and not default_course_name:
+        return {'error': 'Course not found. Please check the course code or name.'}, 400
+
+    target.default_course_code = default_course_code
+    target.default_course_name = default_course_name
+    db.session.commit()
+
+    return {
+        'ok': True,
+        'user': user_payload_factory(target),
+    }, 200
+
+
 def build_admin_user_set_athlete_code_response(
     user_id,
     payload,

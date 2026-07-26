@@ -23,6 +23,7 @@ from shared_admin_user_handlers import (
     build_admin_status_response,
     build_admin_user_set_admin_response,
     build_admin_user_set_athlete_code_response,
+    build_admin_user_set_default_course_response,
     build_admin_users_list_response,
 )
 from shared_password_reset_handlers import (
@@ -1086,31 +1087,15 @@ def admin_user_set_default_course(user_id):
         return jsonify({'error': 'Forbidden'}), 403
 
     payload = request.get_json(silent=True) or {}
-    target = AuthUser.query.filter_by(id=user_id).first()
-    if not target:
-        return jsonify({'error': 'User not found'}), 404
-
-    dc_code, dc_name = _resolve_default_course(payload.get('defaultCourseCode'), payload.get('defaultCourseName'))
-    if not dc_code and not dc_name:
-        return jsonify({'error': 'Course not found. Please check the course code or name.'}), 400
-    target.default_course_code = dc_code
-    target.default_course_name = dc_name
-    db.session.commit()
-
-    return jsonify({
-        'ok': True,
-        'user': {
-            'id': target.id,
-            'email': target.email,
-            'displayName': target.display_name,
-            'athleteCode': target.athlete_code,
-            'defaultCourseCode': target.default_course_code,
-            'defaultCourseName': target.default_course_name,
-            'isAdmin': bool(target.is_admin),
-            'createdAt': _format_db_datetime(target.created_at),
-            'lastLoginAt': _format_db_datetime(target.last_login_at)
-        }
-    }), 200
+    response_body, status_code = build_admin_user_set_default_course_response(
+        user_id,
+        payload,
+        AuthUser=AuthUser,
+        db=db,
+        user_payload_factory=_user_payload,
+        resolve_default_course=_resolve_default_course,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/admin/users/<int:user_id>/athlete-code', methods=['POST'])
