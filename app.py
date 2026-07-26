@@ -19,6 +19,10 @@ from shared_feedback_handlers import (
     build_feedback_list_response,
     build_feedback_update_response,
 )
+from shared_admin_user_handlers import (
+    build_admin_user_set_admin_response,
+    build_admin_user_set_athlete_code_response,
+)
 from shared_password_reset_handlers import (
     build_auth_config_response,
     build_password_reset_confirm_response,
@@ -1062,36 +1066,16 @@ def admin_user_set_admin(user_id):
         return jsonify({'error': 'Forbidden'}), 403
 
     payload = request.get_json(silent=True) or {}
-    is_admin = bool(payload.get('isAdmin', False))
-
-    target = AuthUser.query.filter_by(id=user_id).first()
-    if not target:
-        return jsonify({'error': 'User not found'}), 404
-
-    if not is_admin and bool(target.is_admin):
-        admin_count_before = _admin_count()
-        if admin_count_before <= 1:
-            return jsonify({'error': 'At least one admin is required.'}), 400
-
-    target.is_admin = is_admin
-    db.session.commit()
-
-    return jsonify({
-        'ok': True,
-        'user': {
-            'id': target.id,
-            'email': target.email,
-            'displayName': target.display_name,
-            'athleteCode': target.athlete_code,
-            'defaultCourseCode': target.default_course_code,
-            'defaultCourseName': target.default_course_name,
-            'isAdmin': bool(target.is_admin),
-            'createdAt': _format_db_datetime(target.created_at),
-            'lastLoginAt': _format_db_datetime(target.last_login_at)
-        },
-        'adminCount': _admin_count(),
-        'bootstrapOpen': _is_admin_bootstrap_open()
-    }), 200
+    response_body, status_code = build_admin_user_set_admin_response(
+        user_id,
+        payload,
+        AuthUser=AuthUser,
+        db=db,
+        user_payload_factory=_user_payload,
+        admin_count_factory=_admin_count,
+        bootstrap_state_factory=lambda: (_admin_count(), _is_admin_bootstrap_open()),
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/admin/users/<int:user_id>/default-course', methods=['POST'])
@@ -1139,33 +1123,16 @@ def admin_user_set_athlete_code(user_id):
         return jsonify({'error': 'Forbidden'}), 403
 
     payload = request.get_json(silent=True) or {}
-    target = AuthUser.query.filter_by(id=user_id).first()
-    if not target:
-        return jsonify({'error': 'User not found'}), 404
-
-    requested_athlete_code = _normalize_athlete_code(payload.get('athleteCode'))
-    resolved_athlete_code = _resolve_athlete_code(requested_athlete_code)
-
-    if requested_athlete_code and not resolved_athlete_code:
-        return jsonify({'error': 'Athlete not found. Please choose a valid athlete from search.'}), 400
-
-    target.athlete_code = resolved_athlete_code
-    db.session.commit()
-
-    return jsonify({
-        'ok': True,
-        'user': {
-            'id': target.id,
-            'email': target.email,
-            'displayName': target.display_name,
-            'athleteCode': target.athlete_code,
-            'defaultCourseCode': target.default_course_code,
-            'defaultCourseName': target.default_course_name,
-            'isAdmin': bool(target.is_admin),
-            'createdAt': _format_db_datetime(target.created_at),
-            'lastLoginAt': _format_db_datetime(target.last_login_at)
-        }
-    }), 200
+    response_body, status_code = build_admin_user_set_athlete_code_response(
+        user_id,
+        payload,
+        AuthUser=AuthUser,
+        db=db,
+        user_payload_factory=_user_payload,
+        normalize_athlete_code=_normalize_athlete_code,
+        resolve_athlete_code=_resolve_athlete_code,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/admin/activity', methods=['GET'])
