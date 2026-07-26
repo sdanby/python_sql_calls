@@ -80,6 +80,36 @@ def build_admin_users_list_response(
     }, 200
 
 
+def build_admin_activity_response(
+    user,
+    *,
+    can_access_admin,
+    limit_raw,
+    since_raw,
+    parse_since,
+    activity_loader,
+    min_limit=1,
+    max_limit=5000,
+    default_limit=300,
+):
+    if not user:
+        return {'error': 'Unauthorized'}, 401
+    if not can_access_admin:
+        return {'error': 'Forbidden'}, 403
+
+    try:
+        limit = int(limit_raw)
+    except Exception:
+        limit = int(default_limit)
+    limit = max(int(min_limit), min(limit, int(max_limit)))
+
+    activity = activity_loader(limit, parse_since(since_raw))
+    return {
+        'activity': activity,
+        'limit': limit,
+    }, 200
+
+
 def build_admin_user_set_default_course_response(
     user_id,
     payload,
