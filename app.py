@@ -26,10 +26,9 @@ from shared_password_reset_handlers import (
     build_password_reset_validate_response,
 )
 from shared_event_highlights import (
-    build_date_variants,
     build_event_highlights_payload,
-    parse_age_grade_value,
-    parse_time_to_seconds,
+    normalize_mapping_rows,
+    resolve_event_highlights_context,
 )
 import traceback
 import importlib
@@ -2148,35 +2147,23 @@ def get_event_highlights():
         return jsonify({'error': 'Provide event_date and one of event_code or event_name'}), 400
 
     try:
-        resolved_event_code = event_code
-        resolved_event_name = None
-        if resolved_event_code is None:
-            row = db.session.execute(text("""
+        context = resolve_event_highlights_context(
+            event_code,
+            event_name,
+            event_date,
+            lookup_event_by_name=lambda search_name: db.session.execute(text("""
                 SELECT event_code, COALESCE(NULLIF(display_name, ''), event_name) AS event_name
                 FROM events
                 WHERE LOWER(event_name) = LOWER(:event_name) OR LOWER(display_name) = LOWER(:event_name)
                 LIMIT 1
-            """), {'event_name': event_name}).mappings().first()
-            if row:
-                resolved_event_code = row.get('event_code')
-                resolved_event_name = row.get('event_name')
-
-        if resolved_event_code is None:
-            return jsonify({'error': 'Event not found'}), 404
-
-        if resolved_event_name is None:
-            row = db.session.execute(text("""
+            """), {'event_name': search_name}).mappings().first(),
+            lookup_event_name_by_code=lambda resolved_code: db.session.execute(text("""
                 SELECT COALESCE(NULLIF(display_name, ''), event_name) AS event_name
                 FROM events
                 WHERE event_code = :event_code
                 LIMIT 1
-            """), {'event_code': resolved_event_code}).mappings().first()
-            resolved_event_name = row.get('event_name') if row else str(event_name or '')
-
-        event_row = None
-        resolved_event_date = None
-        for candidate_date in build_date_variants(event_date):
-            event_row = db.session.execute(text("""
+            """), {'event_code': resolved_code}).mappings().first(),
+            lookup_event_row=lambda resolved_code, candidate_date: db.session.execute(text("""
                 SELECT
                     pe.event_code,
                     pe.event_date,
@@ -2195,15 +2182,18 @@ def get_event_highlights():
                 LEFT JOIN events e ON pe.event_code = e.event_code
                 WHERE pe.event_code = :event_code AND pe.event_date = :event_date
                 LIMIT 1
-            """), {'event_code': resolved_event_code, 'event_date': candidate_date}).mappings().first()
-            if event_row:
-                resolved_event_date = candidate_date
-                break
+            """), {'event_code': resolved_code, 'event_date': candidate_date}).mappings().first(),
+        )
 
-        if not event_row or resolved_event_date is None:
+        if not context:
             return jsonify({'error': 'Event not found'}), 404
 
-        position_rows = db.session.execute(text("""
+        event_row = context['event_row']
+        resolved_event_code = context['resolved_event_code']
+        resolved_event_name = context['resolved_event_name']
+        resolved_event_date = context['resolved_event_date']
+
+        position_rows = normalize_mapping_rows(db.session.execute(text("""
             SELECT
                 ep.position,
                 ep.name,
@@ -2218,10 +2208,10 @@ def get_event_highlights():
             LEFT JOIN athletes a ON a.athlete_code = ep.athlete_code
             WHERE ep.event_code = :event_code AND ep.event_date = :event_date
             ORDER BY ep.position
-        """), {'event_code': resolved_event_code, 'event_date': resolved_event_date}).mappings().all()
+        """), {'event_code': resolved_event_code, 'event_date': resolved_event_date}).mappings().all())
 
         try:
-            volunteer_rows = db.session.execute(text("""
+            volunteer_rows = normalize_mapping_rows(db.session.execute(text("""
                 SELECT
                     v.athlete_name,
                     v.athlete_code,
@@ -2231,7 +2221,7 @@ def get_event_highlights():
                 LEFT JOIN athletes a ON a.athlete_code = v.athlete_code
                 WHERE v.event_code = :event_code AND v.event_date = :event_date
                 ORDER BY COALESCE(v.athlete_name, v.athlete_code), v.athlete_code
-            """), {'event_code': resolved_event_code, 'event_date': resolved_event_date}).mappings().all()
+            """), {'event_code': resolved_event_code, 'event_date': resolved_event_date}).mappings().all())
         except Exception:
             volunteer_rows = []
         payload = build_event_highlights_payload(

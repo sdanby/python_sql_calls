@@ -1,6 +1,18 @@
 import re
 
 
+def normalize_mapping_row(row):
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    return {key: row.get(key) for key in row.keys()}
+
+
+def normalize_mapping_rows(rows):
+    return [normalize_mapping_row(row) for row in (rows or [])]
+
+
 def build_date_variants(raw_value):
     variants = []
     if raw_value:
@@ -19,6 +31,49 @@ def build_date_variants(raw_value):
             ordered.append(value)
             seen.add(value)
     return ordered
+
+
+def resolve_event_highlights_context(
+    event_code,
+    event_name,
+    event_date,
+    lookup_event_by_name,
+    lookup_event_name_by_code,
+    lookup_event_row,
+):
+    resolved_event_code = event_code
+    resolved_event_name = None
+
+    if resolved_event_code is None:
+        row = normalize_mapping_row(lookup_event_by_name(event_name))
+        if row:
+            resolved_event_code = row.get('event_code')
+            resolved_event_name = row.get('event_name')
+
+    if resolved_event_code is None:
+        return None
+
+    if resolved_event_name is None:
+        row = normalize_mapping_row(lookup_event_name_by_code(resolved_event_code))
+        resolved_event_name = row.get('event_name') if row else str(event_name or '')
+
+    event_row = None
+    resolved_event_date = None
+    for candidate_date in build_date_variants(event_date):
+        event_row = normalize_mapping_row(lookup_event_row(resolved_event_code, candidate_date))
+        if event_row:
+            resolved_event_date = candidate_date
+            break
+
+    if not event_row or resolved_event_date is None:
+        return None
+
+    return {
+        'event_row': event_row,
+        'resolved_event_code': resolved_event_code,
+        'resolved_event_name': resolved_event_name,
+        'resolved_event_date': resolved_event_date,
+    }
 
 
 def parse_age_grade_value(raw_value):
