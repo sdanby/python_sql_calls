@@ -1194,6 +1194,44 @@ def admin_user_set_default_course(user_id):
     }), 200
 
 
+@app.route('/api/admin/users/<int:user_id>/athlete-code', methods=['POST'])
+def admin_user_set_athlete_code(user_id):
+    _sess, user = _require_authenticated_user()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not _can_access_admin(user):
+        return jsonify({'error': 'Forbidden'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    target = AuthUser.query.filter_by(id=user_id).first()
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+
+    requested_athlete_code = _normalize_athlete_code(payload.get('athleteCode'))
+    resolved_athlete_code = _resolve_athlete_code(requested_athlete_code)
+
+    if requested_athlete_code and not resolved_athlete_code:
+        return jsonify({'error': 'Athlete not found. Please choose a valid athlete from search.'}), 400
+
+    target.athlete_code = resolved_athlete_code
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'user': {
+            'id': target.id,
+            'email': target.email,
+            'displayName': target.display_name,
+            'athleteCode': target.athlete_code,
+            'defaultCourseCode': target.default_course_code,
+            'defaultCourseName': target.default_course_name,
+            'isAdmin': bool(target.is_admin),
+            'createdAt': _format_db_datetime(target.created_at),
+            'lastLoginAt': _format_db_datetime(target.last_login_at)
+        }
+    }), 200
+
+
 @app.route('/api/admin/activity', methods=['GET'])
 def admin_activity_list():
     _sess, user = _require_authenticated_user()
