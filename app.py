@@ -1538,7 +1538,6 @@ def get_event_time_adjustment():
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
     event_code = request.args.get('event_code', default=None, type=int)
-    debug_mode = request.args.get('debug', default=None, type=int) == 1
 
     def _load_parkrun_events():
         if event_code is None:
@@ -1551,12 +1550,7 @@ def get_parkrun_events():
     response_body, status_code = build_parkrun_events_response(
         event_loader=_load_parkrun_events,
     )
-    response = jsonify(response_body)
-    if debug_mode:
-        response.headers['X-Parkrun-Events-Source'] = 'python_sql_calls_repo/app.py'
-        response.headers['X-Parkrun-Events-Branch'] = 'all' if event_code is None else 'filtered'
-        response.headers['X-Parkrun-Events-Count'] = str(len(response_body))
-    return response, status_code
+    return jsonify(response_body), status_code
 
 @app.route('/api/parkrun_event', methods=['GET'])
 def get_parkrun_event():
