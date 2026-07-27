@@ -52,3 +52,20 @@ def build_event_info_response(event_number, event_code, event_name, event_date, 
         event_name_label: record.get('event_name'),
         'event_code': record.get('event_code'),
     }, 200
+
+
+def build_parkrun_event_response(event_code, event_date, event_number, *, event_lookup):
+    if event_code is None:
+        return {'error': 'event_code is required'}, 400
+    if event_date is None and event_number is None:
+        return {'error': 'Either event_date or event_number is required'}, 400
+
+    record = event_lookup(
+        event_code=event_code,
+        event_date=event_date,
+        event_number=event_number,
+    )
+    if not record:
+        return {'error': 'Event not found for the given code and date/number.'}, 404
+
+    return record, 200

@@ -54,6 +54,7 @@ from shared_event_highlights import (
 from shared_event_lookup_handlers import (
     build_event_by_number_response,
     build_event_info_response,
+    build_parkrun_event_response,
 )
 from shared_analytics_handlers import (
     build_page_visit_response,
@@ -1551,30 +1552,25 @@ def get_parkrun_events():
 
 @app.route('/api/parkrun_event', methods=['GET'])
 def get_parkrun_event():
-    # Retrieve event_code, event_date, and event_number from query parameters
-    event_code = request.args.get('event_code', default=None, type=int)  # Get event_code
-    event_date = request.args.get('event_date', default=None, type=str)  # Get event_date
-    event_number = request.args.get('event_number', default=None, type=int)  # Get event_number
+    event_code = request.args.get('event_code', default=None, type=int)
+    event_date = request.args.get('event_date', default=None, type=str)
+    event_number = request.args.get('event_number', default=None, type=int)
 
-    # Validate input
-    if event_code is None:
-        return jsonify({"error": "event_code is required"}), 400
-
-    if event_date is None and event_number is None:
-        return jsonify({"error": "Either event_date or event_number is required"}), 400
     try:
-        # Fetch the specific event based on event_code and event_date or event_number
-        if event_number is not None:
-            event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_number=event_number).first()
-        else:
-            #event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=formatted_event_date).first()
-            event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=event_date).first()
+        def _load_parkrun_event(*, event_code, event_date, event_number):
+            if event_number is not None:
+                event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_number=event_number).first()
+            else:
+                event_record = ParkrunEvent.query.filter_by(event_code=event_code, event_date=event_date).first()
+            return event_record.to_dict() if event_record else None
 
-        if event_record:
-            return jsonify(event_record.to_dict()), 200  # Return the found record
-            
-        else:
-            return jsonify({"error": "Event not found for the given code and date/number."}), 404
+        response_body, status_code = build_parkrun_event_response(
+            event_code,
+            event_date,
+            event_number,
+            event_lookup=_load_parkrun_event,
+        )
+        return jsonify(response_body), status_code
 
     except Exception as e:
         print(f"Error occurred: {e}")
