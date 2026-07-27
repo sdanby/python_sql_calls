@@ -51,6 +51,9 @@ from shared_event_highlights import (
     normalize_mapping_rows,
     resolve_event_highlights_context,
 )
+from shared_event_lookup_handlers import (
+    build_event_by_number_response,
+)
 import traceback
 import importlib
 import re
@@ -2113,26 +2116,34 @@ def get_event_by_number():
     event_code = request.args.get('event_code', default=None, type=int)
     event_number = request.args.get('event_number', default=None, type=int)
 
-    if event_code is None or event_number is None:
-        return jsonify({"error": "Provide event_code and event_number"}), 400
-
     try:
-        # Use SQLAlchemy to query parkrun_events joined to events for display_name
-        q = db.session.query(ParkrunEvent, Event).join(Event, ParkrunEvent.event_code == Event.event_code)
-        rec = q.filter(ParkrunEvent.event_code == event_code, ParkrunEvent.event_number == event_number).first()
+        def _load_event_by_number(resolved_event_code, resolved_event_number):
+            rec = (
+                db.session.query(ParkrunEvent, Event)
+                .join(Event, ParkrunEvent.event_code == Event.event_code)
+                .filter(
+                    ParkrunEvent.event_code == resolved_event_code,
+                    ParkrunEvent.event_number == resolved_event_number,
+                )
+                .first()
+            )
+            if not rec:
+                return None
 
-        if not rec:
-            return jsonify({"error": "Event not found"}), 404
+            pe, ev = rec
+            return {
+                'event_code': pe.event_code,
+                'event_number': pe.event_number,
+                'event_date': pe.event_date,
+                'event_name': (ev.display_name or ev.event_name) if ev is not None else None,
+            }
 
-        pe, ev = rec  # ParkrunEvent, Event
-        display_name = ev.display_name or ev.event_name if ev is not None else None
-
-        return jsonify({
-            'event_code': pe.event_code,
-            'event_number': pe.event_number,
-            'event_date': pe.event_date,
-            'event_name': display_name
-        }), 200
+        response_body, status_code = build_event_by_number_response(
+            event_code,
+            event_number,
+            event_lookup=_load_event_by_number,
+        )
+        return jsonify(response_body), status_code
 
     except Exception as e:
         app.logger.exception("get_event_by_number error")
