@@ -54,6 +54,7 @@ from shared_event_highlights import (
 from shared_event_lookup_handlers import (
     build_event_by_number_response,
     build_event_info_response,
+    build_parkrun_events_response,
     build_parkrun_event_response,
 )
 from shared_analytics_handlers import (
@@ -1537,18 +1538,19 @@ def get_event_time_adjustment():
 @app.route('/api/parkrun_events', methods=['GET'])
 def get_parkrun_events():
     event_code = request.args.get('event_code', default=None, type=int)
-    
-    if event_code is not None:
-        try:
-            event_code = int(event_code)  # Ensure it's an integer
-        except ValueError:
-            return jsonify({"error": "Invalid event_code"}), 400
 
-    events = ParkrunEvent.query.filter_by(event_code=event_code).all()
-    print(f"Filtered event_code: {event_code}, Found {len(events)} events.")  # Debugging line
-    
-    formatted_events = [event.to_dict() for event in events]
-    return jsonify(formatted_events)
+    def _load_parkrun_events():
+        if event_code is None:
+            events = ParkrunEvent.query.all()
+        else:
+            events = ParkrunEvent.query.filter_by(event_code=event_code).all()
+        print(f"Filtered event_code: {event_code}, Found {len(events)} events.")
+        return [event.to_dict() for event in events]
+
+    response_body, status_code = build_parkrun_events_response(
+        event_loader=_load_parkrun_events,
+    )
+    return jsonify(response_body), status_code
 
 @app.route('/api/parkrun_event', methods=['GET'])
 def get_parkrun_event():

@@ -69,3 +69,7 @@ def build_parkrun_event_response(event_code, event_date, event_number, *, event_
         return {'error': 'Event not found for the given code and date/number.'}, 404
 
     return record, 200
+
+
+def build_parkrun_events_response(*, event_loader):
+    return event_loader(), 200
