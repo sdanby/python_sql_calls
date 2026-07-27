@@ -35,6 +35,16 @@ from shared_password_reset_handlers import (
     build_password_reset_request_response,
     build_password_reset_validate_response,
 )
+from shared_chat_handlers import (
+    build_chat_create_message_response,
+    build_chat_mark_read_response,
+    build_chat_message_payload,
+    build_chat_messages_response,
+    build_chat_unread_payload,
+    build_chat_unread_status_response,
+    get_latest_chat_message_id,
+    mark_chat_read as shared_mark_chat_read,
+)
 from shared_event_highlights import (
     build_event_options_payload,
     build_event_highlights_payload,
@@ -621,66 +631,30 @@ def _feedback_payload(row):
     }
 
 
-def _chat_creator_label(row):
-    display_name = str(row.created_by_display_name or '').strip()
-    if display_name:
-        return display_name
-    email = str(row.created_by_email or '').strip()
-    if email:
-        return email
-    athlete_code = str(row.athlete_code or '').strip()
-    if athlete_code:
-        return athlete_code
-    return 'Unknown'
-
-
 def _chat_message_payload(row):
-    return {
-        'id': row.id,
-        'messageText': row.message_text,
-        'createdAt': row.created_at.isoformat() if row.created_at else None,
-        'createdBy': _chat_creator_label(row),
-        'athleteCode': str(row.athlete_code or '').strip() or None,
-    }
+    return build_chat_message_payload(row, created_at_formatter=lambda value: value.isoformat() if value else None)
 
 
 def _get_latest_chat_message_id():
-    row = db.session.query(db.func.max(ChatMessage.id).label('latest_chat_message_id')).first()
-    if not row:
-        return None
-    latest_chat_message_id = getattr(row, 'latest_chat_message_id', None)
-    if latest_chat_message_id is None and isinstance(row, (tuple, list)) and row:
-        latest_chat_message_id = row[0]
-    return int(latest_chat_message_id) if latest_chat_message_id is not None else None
+    return get_latest_chat_message_id(db=db, ChatMessage=ChatMessage)
 
 
 def _mark_chat_read(user, latest_chat_message_id=None):
-    if not user:
-        return None
-    resolved_latest_chat_message_id = latest_chat_message_id or _get_latest_chat_message_id()
-    if resolved_latest_chat_message_id is None:
-        return None
-    current_last_read = user.last_read_chat_message_id
-    if current_last_read == resolved_latest_chat_message_id:
-        return resolved_latest_chat_message_id
-    user.last_read_chat_message_id = resolved_latest_chat_message_id
-    db.session.commit()
-    return resolved_latest_chat_message_id
+    return shared_mark_chat_read(
+        user,
+        db=db,
+        ChatMessage=ChatMessage,
+        latest_chat_message_id=latest_chat_message_id,
+        latest_chat_message_id_factory=_get_latest_chat_message_id,
+    )
 
 
 def _chat_unread_payload(user, latest_chat_message_id=None):
-    resolved_latest_chat_message_id = latest_chat_message_id if latest_chat_message_id is not None else _get_latest_chat_message_id()
-    last_read_chat_message_id = int(user.last_read_chat_message_id) if user and user.last_read_chat_message_id is not None else None
-    has_unread = bool(
-        user
-        and resolved_latest_chat_message_id is not None
-        and (last_read_chat_message_id is None or last_read_chat_message_id < resolved_latest_chat_message_id)
+    return build_chat_unread_payload(
+        user,
+        latest_chat_message_id=latest_chat_message_id,
+        latest_chat_message_id_factory=_get_latest_chat_message_id,
     )
-    return {
-        'hasUnread': has_unread,
-        'lastReadChatMessageId': last_read_chat_message_id,
-        'latestChatMessageId': resolved_latest_chat_message_id,
-    }
 
 
 @app.route('/api/feedback-requests', methods=['GET'])
@@ -744,20 +718,15 @@ def get_chat_messages():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    limit_raw = request.args.get('limit', 200)
-    try:
-        limit = max(1, min(int(limit_raw), 500))
-    except Exception:
-        limit = 200
-    mark_read_raw = str(request.args.get('markRead', '') or '').strip().lower()
-    should_mark_read = mark_read_raw in {'1', 'true', 'yes', 'y'}
-
-    rows = ChatMessage.query.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit).all()
-    latest_chat_message_id = rows[0].id if rows else None
-    if should_mark_read and latest_chat_message_id is not None:
-        _mark_chat_read(user, latest_chat_message_id)
-    payload = [_chat_message_payload(row) for row in reversed(rows)]
-    return jsonify(payload), 200
+    response_body, status_code = build_chat_messages_response(
+        user,
+        limit_raw=request.args.get('limit', 200),
+        mark_read_raw=request.args.get('markRead', ''),
+        ChatMessage=ChatMessage,
+        chat_message_payload_factory=_chat_message_payload,
+        mark_chat_read_handler=_mark_chat_read,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/chat/unread-status', methods=['GET'])
@@ -766,7 +735,11 @@ def get_chat_unread_status():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    return jsonify(_chat_unread_payload(user)), 200
+    response_body, status_code = build_chat_unread_status_response(
+        user,
+        chat_unread_payload_factory=_chat_unread_payload,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/chat/read', methods=['POST'])
@@ -775,8 +748,12 @@ def mark_chat_read():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    latest_chat_message_id = _mark_chat_read(user)
-    return jsonify(_chat_unread_payload(user, latest_chat_message_id)), 200
+    response_body, status_code = build_chat_mark_read_response(
+        user,
+        mark_chat_read_handler=_mark_chat_read,
+        chat_unread_payload_factory=_chat_unread_payload,
+    )
+    return jsonify(response_body), status_code
 
 
 @app.route('/api/chat/messages', methods=['POST'])
@@ -786,25 +763,16 @@ def create_chat_message():
         return jsonify({'error': 'Unauthorized'}), 401
 
     payload = request.get_json(silent=True) or {}
-    message_text = str(payload.get('messageText') or '').strip()
-    if not message_text:
-        return jsonify({'error': 'messageText is required'}), 400
-    if len(message_text) > 2000:
-        return jsonify({'error': 'messageText is too long'}), 400
-
-    row = ChatMessage(
-        created_by_user_id=user.id,
-        created_by_display_name=(user.display_name or '').strip() or None,
-        created_by_email=user.email,
-        athlete_code=(user.athlete_code or '').strip() or None,
-        message_text=message_text,
-        created_at=datetime.utcnow()
+    response_body, status_code = build_chat_create_message_response(
+        payload,
+        ChatMessage=ChatMessage,
+        db=db,
+        user=user,
+        utcnow=datetime.utcnow,
+        chat_message_payload_factory=_chat_message_payload,
+        mark_chat_read_handler=_mark_chat_read,
     )
-    db.session.add(row)
-    db.session.commit()
-    _mark_chat_read(user, row.id)
-
-    return jsonify(_chat_message_payload(row)), 201
+    return jsonify(response_body), status_code
 
 
 def _format_db_datetime(value):
