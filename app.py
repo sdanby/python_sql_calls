@@ -53,6 +53,7 @@ from shared_event_highlights import (
 )
 from shared_event_lookup_handlers import (
     build_event_by_number_response,
+    build_event_info_response,
 )
 import traceback
 import importlib
@@ -1961,50 +1962,38 @@ def get_event_info():
     event_name = request.args.get('event_name', type=str) or request.args.get('display_name', type=str)
     event_date = request.args.get('event_date', type=str)
 
-    if not event_date or (event_number is None and event_code is None and not event_name):
-        return jsonify({"error": "Provide event_date and one of event_number, event_code or event_name"}), 400
-
-    # Build date variants to try (keep original first)
-    dates_to_try = [event_date]
     try:
-        if re.match(r'^\d{4}-\d{2}-\d{2}$', event_date):
-            y, m, d = event_date.split('-')
-            alt = f"{d}/{m}/{y}"
-            if alt not in dates_to_try:
-                dates_to_try.append(alt)
-        if re.match(r'^\d{2}/\d{2}/\d{4}$', event_date):
-            d, m, y = event_date.split('/')
-            alt2 = f"{y}-{m}-{d}"
-            if alt2 not in dates_to_try:
-                dates_to_try.append(alt2)
-    except Exception:
-        pass
+        def _load_event_info(*, event_number, event_code, event_name, dates_to_try):
+            q = db.session.query(ParkrunEvent, Event).join(Event, ParkrunEvent.event_code == Event.event_code)
 
-    try:
-        # Base query joins parkrun_events with events to get display_name
-        q = db.session.query(ParkrunEvent, Event).join(Event, ParkrunEvent.event_code == Event.event_code)
+            record = None
+            if event_number is not None:
+                record = q.filter(ParkrunEvent.event_number == event_number, ParkrunEvent.event_date.in_(dates_to_try)).first()
 
-        record = None
-        if event_number is not None:
-            record = q.filter(ParkrunEvent.event_number == event_number, ParkrunEvent.event_date.in_(dates_to_try)).first()
+            if record is None and event_code is not None:
+                record = q.filter(ParkrunEvent.event_code == event_code, ParkrunEvent.event_date.in_(dates_to_try)).first()
 
-        if record is None and event_code is not None:
-            record = q.filter(ParkrunEvent.event_code == event_code, ParkrunEvent.event_date.in_(dates_to_try)).first()
+            if record is None and event_name:
+                record = q.filter(func.lower(Event.event_name) == func.lower(event_name), ParkrunEvent.event_date.in_(dates_to_try)).first()
 
-        if record is None and event_name:
-            # case-insensitive match on event_name
-            record = q.filter(func.lower(Event.event_name) == func.lower(event_name), ParkrunEvent.event_date.in_(dates_to_try)).first()
+            if not record:
+                return None
 
-        if not record:
-            return jsonify({"error": "Event not found"}), 404
+            pe, ev = record
+            return {
+                'event_number': pe.event_number,
+                'event_name': ev.display_name or ev.event_name,
+                'event_code': pe.event_code,
+            }
 
-        pe, ev = record  # tuple: (ParkrunEvent, Event)
-        display = ev.display_name or ev.event_name
-        return jsonify({
-            "event_number": pe.event_number,
-            "event_name": display,
-            "event_code": pe.event_code
-        }), 200
+        response_body, status_code = build_event_info_response(
+            event_number,
+            event_code,
+            event_name,
+            event_date,
+            event_lookup=_load_event_info,
+        )
+        return jsonify(response_body), status_code
 
     except Exception as e:
         app.logger.exception("get_event_info error")
